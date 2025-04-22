@@ -46,6 +46,9 @@ async def startup_event():
     """Initialize services on startup."""
     try:
         await db.initialize()
+        # Initialize the ProxyService client and semaphore
+        if not hasattr(ProxyService, "_client") or not ProxyService._client:
+            await ProxyService.get_client()
         env = "kubernetes" if os.environ.get("KUBERNETES_SERVICE_HOST") else "standalone"
         logger.info(f"dgen-ping LLM proxy started in {env} environment (concurrency: {settings.MAX_CONCURRENCY})")
     except Exception as e:
@@ -127,8 +130,11 @@ async def get_info(token: TokenPayload = Depends(get_token_payload)):
     """Get system information."""
     # Count pending requests if possible
     active_requests = 0
-    if hasattr(ProxyService, "_semaphore"):
-        active_requests = ProxyService._semaphore._value
+    if hasattr(ProxyService, "_semaphore") and ProxyService._semaphore is not None:
+        try:
+            active_requests = settings.MAX_CONCURRENCY - ProxyService._semaphore._value
+        except AttributeError:
+            active_requests = "unknown"
         
     return {
         "service": "dgen-ping",
@@ -137,7 +143,7 @@ async def get_info(token: TokenPayload = Depends(get_token_payload)):
         "project_id": token.project_id,
         "token_type": "default" if token.token_id == DEFAULT_TOKEN else "standard",
         "database": "connected" if db.is_connected else "fallback (csv)",
-        "active_requests": settings.MAX_CONCURRENCY - active_requests if active_requests else "unknown",
+        "active_requests": active_requests,
         "max_concurrency": settings.MAX_CONCURRENCY
     }
 

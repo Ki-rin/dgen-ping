@@ -3,6 +3,7 @@ import time
 import logging
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 from models import TelemetryEvent, RequestMetadata
 from db import db
 
@@ -24,50 +25,50 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
         
         # Process request
+        status_code = 500  # Default status code if something goes wrong
+        response = None
         try:
             response = await call_next(request)
             status_code = response.status_code
+            return response
         except Exception as e:
             logger.error(f"Request error: {str(e)}")
-            status_code = 500
+            status_code = HTTP_500_INTERNAL_SERVER_ERROR
             raise
         finally:
-            # Log telemetry for significant requests
-            if (request.method not in ["OPTIONS"] and 
-                not path.startswith("/docs") and 
-                not path.startswith("/static")):
-                
-                duration_ms = (time.time() - start_time) * 1000
-                
-                # Get client ID from auth token if available
-                client_id = getattr(request.state, "token_payload", None)
-                client_id = getattr(client_id, "project_id", "anonymous") if client_id else "anonymous"
-                
-                try:
+            # Only log if response completed or errored out
+            try:
+                # Skip logging for insignificant requests
+                if request.method not in ["OPTIONS"] and not path.startswith("/docs"):
+                    duration_ms = (time.time() - start_time) * 1000
+                    
+                    # Get client ID from auth token if available
+                    client_id = getattr(request.state, "token_payload", None)
+                    client_id = getattr(client_id, "project_id", "anonymous") if client_id else "anonymous"
+                    
                     # Create and log telemetry record
                     metadata = RequestMetadata(
                         client_id=client_id,
-                        user_id=request.headers.get("X-User-ID"),
+                        soeid=request.headers.get("X-User-ID") or "anonymous",
                         target_service="dgen-ping",
                         endpoint=path,
                         method=request.method,
                         status_code=status_code,
                         latency_ms=duration_ms,
-                        request_size=request.headers.get("content-length"),
-                        response_size=getattr(response, "content_length", None)
+                        request_size=int(request.headers.get("content-length", 0)) or None,
+                        response_size=getattr(response, "content_length", None) if response else None
                     )
                     
                     event = TelemetryEvent(
                         event_type="direct_request",
                         metadata=metadata,
-                        client_ip=request.client.host
+                        client_ip=request.client.host,
+                        request_id=request_id
                     )
                     
                     await db.log_telemetry(event)
-                except Exception as e:
-                    logger.error(f"Error logging telemetry: {str(e)}")
-        
-        return response
+            except Exception as e:
+                logger.error(f"Error logging telemetry: {str(e)}")
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Rate limiting middleware."""
