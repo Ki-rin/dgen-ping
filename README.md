@@ -1,29 +1,32 @@
-# dgen-ping
+# dgen-ping: LLM Proxy with Telemetry
 
-API proxy service with integrated telemetry tracking for DGEN.
+High-performance LLM proxy service with integrated telemetry tracking for Citi's Generative AI systems.
 
 ## Overview
 
-dgen-ping is a lightweight proxy service that:
+dgen-ping is a high-throughput, resilient proxy service that:
 
-- Routes API requests to downstream services
-- Collects detailed telemetry data on each request
+- Routes LLM requests to downstream AI services
+- Collects detailed telemetry data for each request
+- Tracks token usage, request/response sizes, and latencies
+- Handles high-concurrency with connection pooling
 - Supports MongoDB storage with CSV fallback
 - Provides simple authentication via API tokens
 
 ## Key Features
 
-- **Proxy Service**: Routes requests to classifier and enhancer services
+- **LLM Proxy**: Routes completion/chat requests to LLM services
+- **High Performance**: Optimized for concurrent requests with connection pooling
 - **Telemetry Collection**: Records detailed metrics about each request
-- **Fallback Mechanism**: Uses CSV logging when MongoDB is unavailable
-- **Simple Authentication**: Supports API tokens with default token option
-- **Rate Limiting**: Optional rate limiting for production deployments
+- **Resilient**: Automatic retries and fallback mechanisms
+- **Token Tracking**: Records prompt and completion token usage
+- **Simple Authentication**: API tokens with default token option
 
 ## Requirements
 
 - Python 3.9+
 - MongoDB (optional - falls back to CSV storage if unavailable)
-- Access to downstream services
+- Access to downstream LLM services
 
 ## Installation
 
@@ -67,30 +70,39 @@ dgen-ping is a lightweight proxy service that:
 
 dgen-ping is configured via environment variables:
 
-| Variable              | Description                           | Default                       |
-| --------------------- | ------------------------------------- | ----------------------------- |
-| `MONGO_URI`           | MongoDB connection string             | `mongodb://admin_mongodb:...` |
-| `DB_NAME`             | MongoDB database name                 | `dgen_db`                     |
-| `DEBUG`               | Enable debug mode                     | `false`                       |
-| `HOST`                | Host to bind service to               | `0.0.0.0`                     |
-| `PORT`                | Port to run service on                | `8001`                        |
-| `DOWNSTREAM_SERVICES` | JSON mapping of service names to URLs | See .env.example              |
-| `ALLOW_DEFAULT_TOKEN` | Enable default token authentication   | `true`                        |
-| `CSV_FALLBACK_DIR`    | Directory for CSV fallback logs       | `telemetry_logs`              |
+| Variable              | Description                           | Default          |
+| --------------------- | ------------------------------------- | ---------------- |
+| `MONGO_URI`           | MongoDB connection string             | `mongodb://...`  |
+| `DB_NAME`             | MongoDB database name                 | `dgen_db`        |
+| `DEBUG`               | Enable debug mode                     | `false`          |
+| `HOST`                | Host to bind service to               | `0.0.0.0`        |
+| `PORT`                | Port to run service on                | `8001`           |
+| `MAX_CONCURRENCY`     | Maximum concurrent requests           | `500`            |
+| `RATE_LIMIT`          | Rate limit per minute                 | `120`            |
+| `WORKERS`             | Number of worker processes            | `4`              |
+| `LLM_TIMEOUT`         | LLM request timeout in seconds        | `60`             |
+| `RETRY_ATTEMPTS`      | Number of retry attempts              | `3`              |
+| `DOWNSTREAM_SERVICES` | JSON mapping of service names to URLs | See .env.example |
+| `ALLOW_DEFAULT_TOKEN` | Enable default token authentication   | `true`           |
+| `DEFAULT_MODEL`       | Default LLM model                     | `gpt-4`          |
+| `DEFAULT_MAX_TOKENS`  | Default max response tokens           | `2000`           |
+| `DEFAULT_TEMPERATURE` | Default LLM temperature               | `0.7`            |
+| `CSV_FALLBACK_DIR`    | Directory for CSV fallback logs       | `telemetry_logs` |
 
 See `.env.example` for a complete example configuration.
 
 ## API Endpoints
 
-### Proxy Endpoints
+### LLM Endpoints
 
-- **POST** `/api/classifier/{path}` - Route request to classifier service
-- **POST** `/api/enhancer/{path}` - Route request to enhancer service
+- **POST** `/api/llm/completion` - Submit an LLM completion request
+- **POST** `/api/llm/chat` - Submit an LLM chat request
 
 ### System Endpoints
 
 - **GET** `/health` - Health check endpoint
-- **GET** `/info` - Service information
+- **GET** `/info` - Service information and status
+- **GET** `/metrics` - Performance metrics
 - **POST** `/telemetry` - Direct telemetry logging
 
 ## Authentication
@@ -103,16 +115,32 @@ X-API-Token: your-token-here
 
 If `ALLOW_DEFAULT_TOKEN` is enabled, you can use the token value `1` for testing.
 
+## Request Format
+
+Send LLM requests with the following JSON structure:
+
+```json
+{
+  "soeid": "ab1234",
+  "project_name": "risk-analysis",
+  "prompt": "Explain the concept of market volatility",
+  "model": "gpt-4",
+  "temperature": 0.7,
+  "max_tokens": 2000
+}
+```
+
 ## Telemetry Data
 
 Each request captures:
 
-- Timestamp
-- Client ID and IP
+- Request ID and timestamp
+- SOEID and project name
 - Target service and endpoint
 - HTTP method and status
-- Latency metrics
-- LLM model and latency (when available)
+- Request latency metrics
+- LLM model and latency
+- Token usage (prompt, completion, total)
 - Request and response sizes
 
 ## Development
@@ -127,15 +155,9 @@ dgen-ping/
 ├── main.py          # FastAPI application and routes
 ├── middleware.py    # Telemetry and rate limiting middleware
 ├── models.py        # Data models
-├── proxy.py         # Proxy service implementation
+├── proxy.py         # LLM proxy service implementation
 ├── requirements.txt # Dependencies
 └── run_local.py     # Local development script
-```
-
-### Running Tests
-
-```bash
-pytest
 ```
 
 ## License

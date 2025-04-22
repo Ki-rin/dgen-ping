@@ -1,0 +1,12 @@
+*/__pycache__/*
+/__pycache__/*
+/telemetry_logs/*
+*.log
+*.venv
+*.env
+*.DS_Store
+*.vscode
+*.idea
+*.log
+*.sqlite3
+*.db
