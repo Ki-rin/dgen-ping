@@ -46,21 +46,12 @@ async def startup_event():
     """Initialize services on startup."""
     try:
         await db.initialize()
-        # Initialize the ProxyService client and semaphore
-        if not hasattr(ProxyService, "_client") or not ProxyService._client:
-            await ProxyService.get_client()
+        # Initialize the ProxyService
+        await ProxyService.initialize()
         env = "kubernetes" if os.environ.get("KUBERNETES_SERVICE_HOST") else "standalone"
         logger.info(f"dgen-ping LLM proxy started in {env} environment (concurrency: {settings.MAX_CONCURRENCY})")
     except Exception as e:
         logger.error(f"Startup error: {e}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    # Close any open connections
-    if hasattr(ProxyService, "_client") and ProxyService._client:
-        await ProxyService._client.aclose()
-    logger.info("dgen-ping service shutdown")
 
 @app.get("/health", tags=["System"])
 async def health_check():
@@ -71,7 +62,7 @@ async def health_check():
         "version": "1.0.0",
         "database": "connected" if db.is_connected else "fallback (csv)",
         "default_token": settings.ALLOW_DEFAULT_TOKEN,
-        "services": list(settings.DOWNSTREAM_SERVICES.keys()),
+        "services": ["llm_direct"],  # Using direct llm_connection instead of downstream services
         "concurrency": settings.MAX_CONCURRENCY
     }
 
@@ -89,7 +80,7 @@ async def llm_completion(
     logger.info(f"LLM request from {payload.soeid} (project: {payload.project_name}), prompt length: {len(payload.prompt)}")
     
     try:
-        # Forward to LLM service
+        # Process request using dgen_llm
         result = await ProxyService.proxy_request("llm", request, payload, token)
         
         # Log response metrics with current timestamp
@@ -109,7 +100,7 @@ async def llm_chat(
     token: TokenPayload = Depends(get_token_payload)
 ):
     """Process an LLM chat request."""
-    # Route to chat-specific endpoint if needed
+    # Route to completion handler for API compatibility
     return await llm_completion(request, background_tasks, payload, token)
 
 @app.post("/telemetry", tags=["Telemetry"])
@@ -150,8 +141,6 @@ async def get_info(token: TokenPayload = Depends(get_token_payload)):
 @app.get("/metrics", tags=["System"])
 async def get_metrics(token: TokenPayload = Depends(get_token_payload)):
     """Get system metrics."""
-    # This would be expanded in a production system to provide
-    # detailed metrics about request rates, latencies, etc.
     metrics = await db.get_metrics()
     
     return {

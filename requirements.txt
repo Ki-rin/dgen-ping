@@ -7,3 +7,4 @@ pymongo
 motor
 python-multipart
 python-dotenv
+dgen_llm

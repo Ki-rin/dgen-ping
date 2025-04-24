@@ -1,7 +1,6 @@
-"""Proxy service for routing LLM requests to downstream services."""
+"""Proxy service for routing LLM requests using dgen_llm library."""
 import time
 import uuid
-import httpx
 import logging
 import asyncio
 from fastapi import Request, HTTPException
@@ -10,103 +9,98 @@ from config import settings
 from models import TelemetryEvent, RequestMetadata, LlmRequest, LlmResponse
 from db import db
 
+# Import the dgen_llm package
+try:
+    from dgen_llm import llm_connection
+except ImportError:
+    raise ImportError("dgen_llm package is required. Please install it using pip.")
+
 logger = logging.getLogger("dgen-ping.proxy")
 
 # Set up connection pool for high-concurrency
-MAX_CONNECTIONS = 100
-TIMEOUT_SECONDS = 60
-RETRY_ATTEMPTS = 3
+MAX_CONCURRENCY = settings.MAX_CONCURRENCY
+RETRY_ATTEMPTS = settings.RETRY_ATTEMPTS
 
 class ProxyService:
-    """Service for proxying requests to downstream LLM services."""
+    """Service for handling LLM requests using dgen_llm library."""
     
-    # Create a shared httpx client for connection pooling
-    _client = None
+    # Semaphore for limiting concurrent requests
     _semaphore = None
     
     @classmethod
-    async def get_client(cls):
-        """Get or create httpx client with connection pooling."""
-        if cls._client is None:
-            limits = httpx.Limits(
-                max_connections=MAX_CONNECTIONS,
-                max_keepalive_connections=MAX_CONNECTIONS // 2
-            )
-            cls._client = httpx.AsyncClient(
-                limits=limits,
-                timeout=TIMEOUT_SECONDS,
-                follow_redirects=True
-            )
-            cls._semaphore = asyncio.Semaphore(MAX_CONNECTIONS * 2)
-        return cls._client
+    async def initialize(cls):
+        """Initialize the proxy service."""
+        if cls._semaphore is None:
+            cls._semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+        logger.info(f"ProxyService initialized with max concurrency: {MAX_CONCURRENCY}")
+        return cls
     
     @staticmethod
     async def proxy_request(target: str, request: Request, payload: LlmRequest, token_payload):
         """
-        Proxy an LLM request to a downstream service and record telemetry.
+        Process an LLM request using dgen_llm library.
         
         Args:
-            target: Target service identifier
+            target: Target service identifier (unused, for API compatibility)
             request: Original request
             payload: LLM request payload
             token_payload: Authentication token payload
             
         Returns:
-            Response from downstream service
+            Response with LLM-generated content
         """
+        if ProxyService._semaphore is None:
+            await ProxyService.initialize()
+            
         start_time = time.time()
         request_id = str(uuid.uuid4())
         
-        # Check if target service exists
-        if target not in settings.DOWNSTREAM_SERVICES:
-            raise HTTPException(status_code=404, detail=f"Service '{target}' not found")
-            
-        target_url = settings.DOWNSTREAM_SERVICES[target]
+        # Extract request data
+        prompt = payload.prompt
+        model = payload.model or settings.DEFAULT_MODEL
+        temperature = payload.temperature or settings.DEFAULT_TEMPERATURE
+        max_tokens = payload.max_tokens or settings.DEFAULT_MAX_TOKENS
         
-        # Extract path and build target URL
-        path = request.url.path
-        service_path = path.replace(f"/api/{target}", "", 1) or "/"
-        full_url = f"{target_url}{service_path}"
-        
-        # Calculate prompt length
-        request_size = len(payload.prompt)
-        
-        # Prepare headers
-        headers = dict(request.headers)
-        headers["X-Forwarded-For"] = request.client.host
-        headers["X-Project-ID"] = token_payload.project_id
-        headers["X-Request-ID"] = request_id
-        headers["X-SOEID"] = payload.soeid
-        headers["X-Project-Name"] = payload.project_name
-        
-        if "host" in headers:
-            del headers["host"]
-            
-        # Get httpx client
-        client = await ProxyService.get_client()
+        # Calculate prompt length for telemetry
+        request_size = len(prompt)
         
         # Use semaphore to limit concurrent requests
         async with ProxyService._semaphore:
             for attempt in range(RETRY_ATTEMPTS):
                 try:
-                    # Make request to downstream service
-                    response = await client.request(
-                        method=request.method,
-                        url=full_url,
-                        json=payload.model_dump(),
-                        headers=headers,
-                        timeout=TIMEOUT_SECONDS
-                    )
+                    logger.info(f"Processing LLM request {request_id} (attempt {attempt+1}/{RETRY_ATTEMPTS})")
                     
-                    # Calculate request time
+                    # Call dgen_llm to generate content
+                    # Note: This is a blocking call, but we're handling it with a semaphore
+                    # to limit concurrency and not overwhelm the system
+                    completion_text = llm_connection.generate_content(prompt)
+                    
+                    # Calculate response size
+                    response_size = len(completion_text) if completion_text else 0
+                    
+                    # Calculate latency
                     latency_ms = (time.time() - start_time) * 1000
                     
-                    # Extract metrics and response data
-                    response_json = response.json()
-                    response_size = len(response.content)
+                    # Simple token counting approximation
+                    # ~4 characters per token is a rough estimate
+                    prompt_tokens = max(1, len(prompt) // 4)
+                    completion_tokens = max(1, len(completion_text) // 4) if completion_text else 0
+                    total_tokens = prompt_tokens + completion_tokens
                     
-                    # Extract token counts and model info
-                    llm_model, llm_latency, token_counts, additional_data = ProxyService._extract_llm_metrics(response_json)
+                    # Prepare token counts for telemetry
+                    token_counts = {
+                        "prompt": prompt_tokens,
+                        "completion": completion_tokens,
+                        "total": total_tokens
+                    }
+                    
+                    # Additional metadata
+                    additional_data = {
+                        "model": model,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "request_id": request_id
+                    }
                     
                     # Log telemetry
                     await ProxyService._log_telemetry(
@@ -114,105 +108,50 @@ class ProxyService:
                         request_id=request_id,
                         soeid=payload.soeid,
                         project_name=payload.project_name,
-                        target=target,
-                        service_path=service_path,
-                        status_code=response.status_code,
+                        target="llm",
+                        service_path="/completion",
+                        status_code=200,
                         latency_ms=latency_ms,
                         token_payload=token_payload,
-                        llm_model=llm_model,
-                        llm_latency=llm_latency,
+                        llm_model=model,
+                        llm_latency=latency_ms,
                         token_counts=token_counts,
                         additional_data=additional_data,
                         request_size=request_size,
                         response_size=response_size
                     )
                     
-                    # Return response as LlmResponse
-                    if response.status_code == 200:
-                        return LlmResponse(
-                            completion=response_json.get("completion") or response_json.get("text") or response_json.get("content", ""),
-                            model=llm_model or "unknown",
-                            metadata={
-                                "request_id": request_id,
-                                "latency": latency_ms / 1000,
-                                "tokens": token_counts,
-                                **additional_data
-                            }
-                        )
-                    else:
-                        # Handle non-200 responses
-                        raise HTTPException(
-                            status_code=response.status_code,
-                            detail=response_json.get("detail") or "Error from LLM service"
-                        )
-                        
-                except httpx.TimeoutException:
-                    if attempt < RETRY_ATTEMPTS - 1:
-                        logger.warning(f"Request to {target} timed out, retrying ({attempt+1}/{RETRY_ATTEMPTS})")
-                        continue
-                    logger.error(f"Request to {target} timed out after {RETRY_ATTEMPTS} attempts")
-                    await ProxyService._log_error_telemetry(
-                        request, request_id, payload.soeid, payload.project_name, target, service_path, 
-                        503, start_time, token_payload, request_size, "Timeout"
+                    logger.info(f"LLM request {request_id} completed in {latency_ms/1000:.2f}s")
+                    
+                    # Return response
+                    return LlmResponse(
+                        completion=completion_text,
+                        model=model,
+                        metadata={
+                            "request_id": request_id,
+                            "latency": latency_ms / 1000,
+                            "tokens": token_counts,
+                            **additional_data
+                        }
                     )
-                    raise HTTPException(
-                        status_code=HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=f"Request to {target} service timed out"
-                    )
-                
-                except httpx.RequestError as e:
-                    if attempt < RETRY_ATTEMPTS - 1:
-                        logger.warning(f"Request to {target} failed: {str(e)}, retrying ({attempt+1}/{RETRY_ATTEMPTS})")
-                        continue
-                    logger.error(f"Error proxying to {target}: {str(e)}")
-                    await ProxyService._log_error_telemetry(
-                        request, request_id, payload.soeid, payload.project_name, target, service_path, 
-                        503, start_time, token_payload, request_size, str(e)
-                    )
-                    raise HTTPException(
-                        status_code=HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=f"Error communicating with {target} service: {str(e)}"
-                    )
-                
+                    
                 except Exception as e:
-                    logger.error(f"Unexpected error proxying to {target}: {str(e)}")
+                    if attempt < RETRY_ATTEMPTS - 1:
+                        logger.warning(f"LLM request failed: {str(e)}, retrying ({attempt+1}/{RETRY_ATTEMPTS})")
+                        continue
+                    
+                    logger.error(f"Error processing LLM request: {str(e)}")
+                    
+                    # Log error telemetry
                     await ProxyService._log_error_telemetry(
-                        request, request_id, payload.soeid, payload.project_name, target, service_path, 
+                        request, request_id, payload.soeid, payload.project_name, "llm", "/completion", 
                         500, start_time, token_payload, request_size, str(e)
                     )
+                    
                     raise HTTPException(
-                        status_code=500,
-                        detail=f"Unexpected error: {str(e)}"
+                        status_code=HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"Error processing LLM request: {str(e)}"
                     )
-    
-    @staticmethod
-    def _extract_llm_metrics(response_json):
-        """Extract LLM metrics from response."""
-        llm_model = None
-        llm_latency = None
-        token_counts = {"prompt": 0, "completion": 0, "total": 0}
-        additional_data = {}
-        
-        # Try to extract standard fields
-        if "model" in response_json:
-            llm_model = response_json["model"]
-        
-        if "latency" in response_json:
-            llm_latency = response_json["latency"]
-        
-        # Extract token counts
-        usage = response_json.get("usage", {})
-        if usage:
-            token_counts["prompt"] = usage.get("prompt_tokens", 0)
-            token_counts["completion"] = usage.get("completion_tokens", 0)
-            token_counts["total"] = usage.get("total_tokens", 0)
-        
-        # Extract any additional metadata
-        metadata = response_json.get("metadata", {})
-        if metadata:
-            additional_data = metadata
-        
-        return llm_model, llm_latency, token_counts, additional_data
     
     @staticmethod
     async def _log_error_telemetry(

@@ -6,17 +6,17 @@ High-performance LLM proxy service with integrated telemetry tracking for Citi's
 
 dgen-ping is a high-throughput, resilient proxy service that:
 
-- Routes LLM requests to downstream AI services
+- Integrates directly with the dgen_llm package for LLM content generation
 - Collects detailed telemetry data for each request
 - Tracks token usage, request/response sizes, and latencies
-- Handles high-concurrency with connection pooling
+- Handles high-concurrency with async processing
 - Supports MongoDB storage with CSV fallback
 - Provides simple authentication via API tokens
 
 ## Key Features
 
-- **LLM Proxy**: Routes completion/chat requests to LLM services
-- **High Performance**: Optimized for concurrent requests with connection pooling
+- **Direct LLM Integration**: Uses dgen_llm.llm_connection for content generation
+- **High Performance**: Optimized for concurrent requests with async processing
 - **Telemetry Collection**: Records detailed metrics about each request
 - **Resilient**: Automatic retries and fallback mechanisms
 - **Token Tracking**: Records prompt and completion token usage
@@ -25,8 +25,8 @@ dgen-ping is a high-throughput, resilient proxy service that:
 ## Requirements
 
 - Python 3.9+
+- dgen_llm package
 - MongoDB (optional - falls back to CSV storage if unavailable)
-- Access to downstream LLM services
 
 ## Installation
 
@@ -43,51 +43,38 @@ dgen-ping is a high-throughput, resilient proxy service that:
 
    ```bash
    pip install -r requirements.txt
+   pip install dgen_llm
    ```
 
 3. Run the local development server:
 
    ```bash
-   python run_local.py
+   python run.py
    ```
 
 4. Access the API at http://127.0.0.1:8001 and documentation at http://127.0.0.1:8001/docs
-
-### Docker Deployment
-
-1. Build the Docker image:
-
-   ```bash
-   docker build -t dgen-ping .
-   ```
-
-2. Run the container:
-   ```bash
-   docker run -p 8001:8001 dgen-ping
-   ```
 
 ## Configuration
 
 dgen-ping is configured via environment variables:
 
-| Variable              | Description                           | Default          |
-| --------------------- | ------------------------------------- | ---------------- |
-| `MONGO_URI`           | MongoDB connection string             | `mongodb://...`  |
-| `DB_NAME`             | MongoDB database name                 | `dgen_db`        |
-| `DEBUG`               | Enable debug mode                     | `false`          |
-| `HOST`                | Host to bind service to               | `0.0.0.0`        |
-| `PORT`                | Port to run service on                | `8001`           |
-| `MAX_CONCURRENCY`     | Maximum concurrent requests           | `500`            |
-| `RATE_LIMIT`          | Rate limit per minute                 | `120`            |
-| `WORKERS`             | Number of worker processes            | `4`              |
-| `LLM_TIMEOUT`         | LLM request timeout in seconds        | `60`             |
-| `RETRY_ATTEMPTS`      | Number of retry attempts              | `3`              |
-| `DOWNSTREAM_SERVICES` | JSON mapping of service names to URLs | See .env.example |
-| `ALLOW_DEFAULT_TOKEN` | Enable default token authentication   | `true`           |
-| `DEFAULT_MODEL`       | Default LLM model                     | `gpt-4`          |
-| `DEFAULT_MAX_TOKENS`  | Default max response tokens           | `2000`           |
-| `DEFAULT_TEMPERATURE` | Default LLM temperature               | `0.7`            |
-| `CSV_FALLBACK_DIR`    | Directory for CSV fallback logs       | `telemetry_logs` |
+| Variable              | Description                         | Default          |
+| --------------------- | ----------------------------------- | ---------------- |
+| `MONGO_URI`           | MongoDB connection string           | `mongodb://...`  |
+| `DB_NAME`             | MongoDB database name               | `dgen_db`        |
+| `DEBUG`               | Enable debug mode                   | `false`          |
+| `HOST`                | Host to bind service to             | `0.0.0.0`        |
+| `PORT`                | Port to run service on              | `8001`           |
+| `MAX_CONCURRENCY`     | Maximum concurrent requests         | `500`            |
+| `RATE_LIMIT`          | Rate limit per minute               | `120`            |
+| `WORKERS`             | Number of worker processes          | `4`              |
+| `LLM_TIMEOUT`         | LLM request timeout in seconds      | `60`             |
+| `RETRY_ATTEMPTS`      | Number of retry attempts            | `3`              |
+| `ALLOW_DEFAULT_TOKEN` | Enable default token authentication | `true`           |
+| `DEFAULT_MODEL`       | Default LLM model                   | `gpt-4`          |
+| `DEFAULT_MAX_TOKENS`  | Default max response tokens         | `2000`           |
+| `DEFAULT_TEMPERATURE` | Default LLM temperature             | `0.7`            |
+| `CSV_FALLBACK_DIR`    | Directory for CSV fallback logs     | `telemetry_logs` |
 
 See `.env.example` for a complete example configuration.
 
@@ -143,9 +130,31 @@ Each request captures:
 - Token usage (prompt, completion, total)
 - Request and response sizes
 
-## Development
+## Testing
 
-### Project Structure
+To test the service, you can use the included test client:
+
+```bash
+# Run a quick test with example prompts
+python test_client.py
+
+# Test with a specific prompt
+python test_client.py --prompt "Write a summary of recent market trends"
+
+# Get current metrics
+python test_client.py --metrics
+```
+
+## Implementation Details
+
+The proxy service directly integrates with the `dgen_llm` package:
+
+1. When a request is received, it calls `dgen_llm.llm_connection.generate_content(prompt)`
+2. It captures telemetry data about the request and response
+3. Telemetry is stored in MongoDB or falls back to CSV files
+4. Detailed metrics are available via the API
+
+## Project Structure
 
 ```
 dgen-ping/
@@ -155,9 +164,10 @@ dgen-ping/
 ├── main.py          # FastAPI application and routes
 ├── middleware.py    # Telemetry and rate limiting middleware
 ├── models.py        # Data models
-├── proxy.py         # LLM proxy service implementation
+├── proxy.py         # Direct dgen_llm integration
 ├── requirements.txt # Dependencies
-└── run_local.py     # Local development script
+├── run.py           # Local development script
+└── test_client.py   # Testing utility
 ```
 
 ## License
