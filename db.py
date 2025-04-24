@@ -1,5 +1,5 @@
 # Singleton instance
-db = Database()"""Database operations for dgen-ping with CSV fallback, metrics, and schema creation."""
+"""Database operations for dgen-ping with CSV fallback, metrics, and schema creation."""
 import logging
 import csv
 import os
@@ -646,3 +646,6 @@ class Database:
     def is_connected(self):
         """Check if connected to MongoDB."""
         return not self._use_csv_fallback and self._client is not None
+    
+# Singleton instance
+db = Database()
