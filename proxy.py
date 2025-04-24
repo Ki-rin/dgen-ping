@@ -3,6 +3,7 @@ import time
 import uuid
 import logging
 import asyncio
+from datetime import datetime
 from fastapi import Request, HTTPException
 from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 from config import settings
@@ -11,7 +12,7 @@ from db import db
 
 # Import the dgen_llm package
 try:
-    from dgen_llm import llm_connection
+    from dgen_llm import llm_connector
 except ImportError:
     raise ImportError("dgen_llm package is required. Please install it using pip.")
 
@@ -73,7 +74,7 @@ class ProxyService:
                     # Call dgen_llm to generate content
                     # Note: This is a blocking call, but we're handling it with a semaphore
                     # to limit concurrency and not overwhelm the system
-                    completion_text = llm_connection.generate_content(prompt)
+                    completion_text = llm_connector.generate_content(prompt)
                     
                     # Calculate response size
                     response_size = len(completion_text) if completion_text else 0
@@ -120,6 +121,25 @@ class ProxyService:
                         request_size=request_size,
                         response_size=response_size
                     )
+                    
+                    # Log LLM run to dedicated collection
+                    await db.log_llm_run({
+                        "request_id": request_id,
+                        "timestamp": datetime.utcnow(),
+                        "soeid": payload.soeid,
+                        "project_name": payload.project_name,
+                        "prompt": prompt,
+                        "completion": completion_text,
+                        "model": model,
+                        "
+                    
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "prompt_tokens": token_counts["prompt"],
+                        "completion_tokens": token_counts["completion"],
+                        "total_tokens": token_counts["total"],
+                        "latency_ms": latency_ms
+                    })
                     
                     logger.info(f"LLM request {request_id} completed in {latency_ms/1000:.2f}s")
                     
