@@ -1,16 +1,14 @@
 """dgen-ping: LLM proxy service with telemetry tracking."""
-import logging
 import os
 import uuid
 import time
-import asyncio
-from fastapi import FastAPI, Request, Depends, Body, BackgroundTasks, HTTPException
+import logging
+from fastapi import FastAPI, Request, Depends, Body, BackgroundTasks, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import settings
 from db import db
-from auth import get_token_payload, TokenPayload, DEFAULT_TOKEN
+from auth import get_token_payload, TokenPayload, AuthManager, DGEN_KEY
 from proxy import ProxyService
 from models import TelemetryEvent, LlmRequest, LlmResponse
 from middleware import TelemetryMiddleware, RateLimitMiddleware
@@ -18,7 +16,7 @@ from middleware import TelemetryMiddleware, RateLimitMiddleware
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(X-name)s - %(X-levelname)s - %(message)s"
 )
 logger = logging.getLogger("dgen-ping")
 
@@ -47,13 +45,13 @@ async def startup_event():
     try:
         # Initialize database connection
         await db.initialize()
-        
+
         # Initialize the ProxyService
         await ProxyService.initialize()
-        
+
         # Determine environment
         env = "kubernetes" if os.environ.get("KUBERNETES_SERVICE_HOST") else "standalone"
-        
+
         # Log application startup
         startup_metadata = {
             "environment": env,
@@ -63,20 +61,19 @@ async def startup_event():
             "debug": settings.DEBUG,
             "database_connected": db.is_connected
         }
-        
+
         await db.log_connection_event(
             "application_startup",
             "success",
             f"dgen-ping LLM proxy started in {env} environment",
             startup_metadata
         )
-        
+
         logger.info(f"dgen-ping LLM proxy started in {env} environment (concurrency: {settings.MAX_CONCURRENCY})")
     except Exception as e:
         logger.error(f"Startup error: {e}")
-        
-        # Try to log the error even if initialization failed
         try:
+            # Try to log the error even if initialization failed
             await db.log_connection_event(
                 "application_startup",
                 "error",
@@ -97,21 +94,20 @@ async def shutdown_event():
             "dgen-ping service shutdown",
             {"shutdown_time": datetime.utcnow().isoformat()}
         )
-        
         logger.info("dgen-ping service shutdown")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
 
-@app.get("/health", tags=["System"])
+@app.get("/health", tags=["system"])
 async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0",
-        "database": "connected" if db.is_connected else "fallback (csv)",
-        "default_token": settings.ALLOW_DEFAULT_TOKEN,
-        "services": ["llm_direct"],  # Using direct llm_connection instead of downstream services
+        "notes": "Connected if db.is_connected else 'fallback (csv)'",
+        "token": settings.ALLOW_DEFAULT_TOKEN,
+        "services": "llm_direct" if settings.USE_DIRECT_LLM else "Using direct llm connection instead of downstream services",
         "concurrency": settings.MAX_CONCURRENCY
     }
 
@@ -125,17 +121,17 @@ async def llm_completion(
     """Process an LLM completion request."""
     start_time = time.time()
     request_id = str(uuid.uuid4())
-    
+
     logger.info(f"LLM request from {payload.soeid} (project: {payload.project_name}), prompt length: {len(payload.prompt)}")
-    
+
     try:
         # Process request using dgen_llm
         result = await ProxyService.proxy_request("llm", request, payload, token)
-        
+
         # Log response metrics with current timestamp
         processing_time = time.time() - start_time
         logger.info(f"LLM request {request_id} completed in {processing_time:.2f}s, response length: {len(result.completion)}")
-        
+
         return result
     except Exception as e:
         logger.error(f"Error processing LLM request: {str(e)}")
@@ -149,49 +145,49 @@ async def llm_chat(
     token: TokenPayload = Depends(get_token_payload)
 ):
     """Process an LLM chat request."""
-    # Route to completion handler for API compatibility
     return await llm_completion(request, background_tasks, payload, token)
 
 @app.post("/telemetry", tags=["Telemetry"])
-async def log_telemetry(
+async def telemetry_event(
     request: Request,
     event: TelemetryEvent,
-    token: TokenPayload = Depends(get_token_payload)
+    token: TokenPayload = Depends(get_token_payload),
 ):
     """Log a telemetry event."""
-    event.client_ip = request.client.host
     event.metadata.client_id = token.project_id
     event.request_id = event.request_id or str(uuid.uuid4())
-    await db.log_telemetry(event)
+
+    await db.log_telemetry_event(event)
     return {"status": "success", "message": "Telemetry recorded", "request_id": event.request_id}
+
+# (continuation of the previous code…)
 
 @app.get("/info", tags=["System"])
 async def get_info(token: TokenPayload = Depends(get_token_payload)):
-    """Get system information."""
-    # Count pending requests if possible
+    """Get service status with most requests if possible."""
     active_requests = 0
     if hasattr(ProxyService, "_semaphore") and ProxyService._semaphore is not None:
         try:
             active_requests = settings.MAX_CONCURRENCY - ProxyService._semaphore._value
         except AttributeError:
             active_requests = "unknown"
-        
+
     return {
         "service": "dgen-ping",
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat(),
+        "token_type": "standard",
         "project_id": token.project_id,
-        "token_type": "default" if token.token_id == DEFAULT_TOKEN else "standard",
         "database": "connected" if db.is_connected else "fallback (csv)",
         "active_requests": active_requests,
-        "max_concurrency": settings.MAX_CONCURRENCY
+        "max_concurrency": settings.MAX_CONCURRENCY,
     }
 
 @app.get("/metrics", tags=["System"])
 async def get_metrics(token: TokenPayload = Depends(get_token_payload)):
     """Get system metrics."""
     metrics = await db.get_metrics()
-    
+
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "requests_total": metrics.get("requests_total", 0),
@@ -221,64 +217,63 @@ async def get_llm_history(
                 query["soeid"] = soeid
             if project:
                 query["project_name"] = project
-            
+
             # Get LLM runs from MongoDB
             llm_runs = await db.async_client[settings.DB_NAME].llm_runs.find(
                 query
             ).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
-            
+
             # Format for response
             formatted_runs = []
             for run in llm_runs:
-                # Convert ObjectId to string
-                run["_id"] = str(run["_id"])
-                # Format timestamps
+                run["run_id"] = str(run["_id"])  # Convert ObjectId to string
                 if isinstance(run.get("timestamp"), datetime):
                     run["timestamp"] = run["timestamp"].isoformat()
                 formatted_runs.append(run)
-            
+
             return {
                 "total": await db.async_client[settings.DB_NAME].llm_runs.count_documents(query),
                 "skip": skip,
                 "limit": limit,
-                "runs": formatted_runs
+                "results": formatted_runs
             }
         else:
-            # If using CSV fallback, return empty list
             return {
                 "total": 0,
                 "skip": skip,
                 "limit": limit,
-                "runs": [],
+                "results": [],
                 "note": "Database not connected, using CSV fallback. Historical data not available."
             }
+
     except Exception as e:
         logger.error(f"Error retrieving LLM history: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving LLM history: {str(e)}")
+
+
 
 @app.get("/db-status", tags=["System"])
 async def get_db_status(token: TokenPayload = Depends(get_token_payload)):
     """Get database connection status and information."""
     try:
         if db.is_connected:
-            # If connected, get collection counts
+            # Get collection counts
             telemetry_count = await db.async_client[settings.DB_NAME].telemetry.count_documents({})
             llm_runs_count = await db.async_client[settings.DB_NAME].llm_runs.count_documents({})
             connection_logs_count = await db.async_client[settings.DB_NAME].connection_logs.count_documents({})
-            
+
             # Get latest connection events
             latest_events = await db.async_client[settings.DB_NAME].connection_logs.find().sort(
-                "timestamp", -1
-            ).limit(5).to_list(5)
-            
+                "timestamp", -1).limit(5).to_list(5)
+
             # Format connection events
             formatted_events = []
             for event in latest_events:
-                event["_id"] = str(event["_id"])
+                event["event_id"] = str(event["_id"])
                 if isinstance(event.get("timestamp"), datetime):
                     event["timestamp"] = event["timestamp"].isoformat()
                 formatted_events.append(event)
-            
+
             return {
                 "status": "connected",
                 "database": settings.DB_NAME,
@@ -289,24 +284,49 @@ async def get_db_status(token: TokenPayload = Depends(get_token_payload)):
                 },
                 "latest_connection_events": formatted_events
             }
+
         else:
-            # If using CSV fallback
+            # CSV fallback
             csv_files = []
             if os.path.exists(settings.CSV_FALLBACK_DIR):
                 csv_files = [f for f in os.listdir(settings.CSV_FALLBACK_DIR) if f.endswith('.csv')]
-            
             return {
                 "status": "fallback",
                 "fallback_mode": "csv",
                 "fallback_directory": settings.CSV_FALLBACK_DIR,
                 "csv_files": csv_files
             }
+
     except Exception as e:
         logger.error(f"Error getting database status: {e}")
         return {
             "status": "error",
             "error": str(e)
         }
+
+@app.post("/generate-token", tags=["Token"])
+async def generate_token_endpoint(soeid: str, x_token_secret: str = Header(...)):
+    """Generate a token using AuthManager."""
+    if x_token_secret != DGEN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid token secret")
+
+    try:
+        token = await AuthManager.generate_token(soeid=soeid)
+        return {"token": token}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
+
+@app.post("/verify-token", tags=["Token"])
+async def verify_token_endpoint(token: str, x_token_secret: str = Header(...)):
+    """Verify a token using AuthManager."""
+    if x_token_secret != DGEN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid token secret")
+
+    try:
+        payload = await AuthManager.verify_token(token=token)
+        return {"valid": True, "data": payload.dict()}
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
@@ -317,3 +337,4 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         workers=settings.WORKERS
     )
+
