@@ -17,7 +17,7 @@ api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
 class AuthManager:
     @staticmethod
     def generate_token(soeid: str, project_id: str = None) -> str:
-        """Generate JWT token for SOEID."""
+        """Generate JWT token for SOEID with default template."""
         if not soeid or not soeid.strip():
             raise HTTPException(status_code=400, detail="SOEID is required")
         
@@ -25,7 +25,7 @@ class AuthManager:
         if not re.match(r'^[a-zA-Z0-9._-]+$', soeid):
             raise HTTPException(status_code=400, detail="Invalid SOEID format")
         
-        # Use soeid as project_id if not provided for consistency
+        # Default template: use soeid for both token_id and project_id
         actual_project_id = project_id if project_id else soeid
         
         payload = {
@@ -40,21 +40,23 @@ class AuthManager:
 
     @staticmethod
     def verify_token(token: str) -> TokenPayload:
-        """Verify JWT token and return payload."""
+        """Verify JWT token and return payload with default template."""
         if not token:
             if ALLOW_DEFAULT_TOKEN:
-                return TokenPayload(token_id="default_user", project_id="default")
+                # Default template for missing token
+                return TokenPayload(token_id="default_user", project_id="default_user")
             raise HTTPException(status_code=401, detail="Missing API token")
         
         token = token.strip()
         
         if token == "1" and ALLOW_DEFAULT_TOKEN:
-            return TokenPayload(token_id="default_user", project_id="default")
+            # Default template for token "1"
+            return TokenPayload(token_id="default_user", project_id="default_user")
         
         try:
             payload = jwt.decode(token, TOKEN_SECRET, algorithms=["HS256"])
             soeid = payload.get("soeid")
-            project_id = payload.get("project_id", soeid)
+            project_id = payload.get("project_id", soeid)  # Default template: fallback to soeid
             
             if not soeid:
                 raise HTTPException(status_code=401, detail="Invalid token: missing soeid")
