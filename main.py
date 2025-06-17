@@ -1243,7 +1243,6 @@ if __name__ == "__main__":
             logger.error("   - Use a port > 1024 (e.g., 8001)")
             logger.error("   - Run with appropriate permissions")
         
-        sys.exit(1)
     finally:
         logger.info("🔚 Server shutdown complete") = 0
         if time_window_hours > 168:  # Max 1 week
