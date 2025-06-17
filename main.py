@@ -9,6 +9,7 @@ from typing import Dict, Any
 from fastapi import FastAPI, Request, Depends, Body, BackgroundTasks, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 
 from config import settings
 from db import db
