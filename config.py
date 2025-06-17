@@ -1,4 +1,4 @@
-"""Configuration for dgen-ping LLM proxy service."""
+"""Configuration for dgen-ping LLM proxy service with JWT support."""
 import os
 import json
 from pydantic_settings import BaseSettings
@@ -28,9 +28,13 @@ class Settings(BaseSettings):
                  '{"llm":"http://llm-service:8000","classifier":"http://classifier-service:8000","enhancer":"http://enhancer-service:8000"}')
     )
     
-    # Security settings
-    TOKEN_EXPIRY_DAYS: int = int(os.getenv("TOKEN_EXPIRY_DAYS", "90"))
+    # JWT Authentication settings
+    TOKEN_SECRET: str = os.getenv("TOKEN_SECRET", "dgen_secret_key_change_in_production")
     ALLOW_DEFAULT_TOKEN: bool = os.getenv("ALLOW_DEFAULT_TOKEN", "true").lower() == "true"
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    
+    # Legacy settings (for backward compatibility)
+    TOKEN_EXPIRY_DAYS: int = int(os.getenv("TOKEN_EXPIRY_DAYS", "90"))  # Not used with JWT
     
     # CSV fallback settings
     CSV_FALLBACK_DIR: str = os.getenv("CSV_FALLBACK_DIR", "telemetry_logs")
@@ -40,7 +44,49 @@ class Settings(BaseSettings):
     DEFAULT_MAX_TOKENS: int = int(os.getenv("DEFAULT_MAX_TOKENS", "2000"))
     DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
     
+    # Database connection settings
+    DB_CONNECTION_TIMEOUT: int = int(os.getenv("DB_CONNECTION_TIMEOUT", "5"))
+    DB_MAX_RETRIES: int = int(os.getenv("DB_MAX_RETRIES", "3"))
+    
+    # Metrics and monitoring
+    METRICS_CACHE_TTL: int = int(os.getenv("METRICS_CACHE_TTL", "300"))  # 5 minutes
+    
     class Config:
         env_file = ".env"
+        case_sensitive = True
+
+    def validate_settings(self):
+        """Validate critical settings."""
+        if self.TOKEN_SECRET == "dgen_secret_key_change_in_production":
+            if not self.DEBUG:
+                raise ValueError("TOKEN_SECRET must be changed in production!")
+        
+        if self.MAX_CONCURRENCY < 1:
+            raise ValueError("MAX_CONCURRENCY must be at least 1")
+            
+        if self.RATE_LIMIT < 1:
+            raise ValueError("RATE_LIMIT must be at least 1")
 
 settings = Settings()
+
+# Validate settings on import
+try:
+    settings.validate_settings()
+except ValueError as e:
+    if not settings.DEBUG:
+        raise e
+    else:
+        print(f"⚠️  Configuration warning: {e}")
+
+# Helper function to get environment info
+def get_environment_info() -> Dict[str, str]:
+    """Get environment information for debugging."""
+    return {
+        "kubernetes": bool(os.environ.get("KUBERNETES_SERVICE_HOST")),
+        "debug": settings.DEBUG,
+        "allow_default_token": settings.ALLOW_DEFAULT_TOKEN,
+        "csv_fallback_dir": settings.CSV_FALLBACK_DIR,
+        "max_concurrency": settings.MAX_CONCURRENCY,
+        "database_configured": bool(settings.MONGO_URI),
+        "jwt_algorithm": settings.JWT_ALGORITHM
+    }
