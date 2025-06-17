@@ -40,7 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_startup
+@app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
     logger.info("Starting dgen-ping service...")
