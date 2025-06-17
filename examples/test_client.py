@@ -36,21 +36,29 @@ def check_service():
         print("\nMake sure the dgen-ping service is running first!")
         return False
 
-def generate_jwt_token(soeid: str, project_id: str = "default"):
-    """Generate a JWT token for the given user."""
+def generate_jwt_token(soeid: str, project_id: str = None):
+    """Generate a JWT token for the given user. Project ID is optional."""
     headers = {
         "X-Token-Secret": TOKEN_SECRET,
         "Content-Type": "application/json"
     }
     
-    payload = {
-        "soeid": soeid,
-        "project_id": project_id
-    }
+    # Use simple endpoint if no project_id specified
+    if project_id:
+        endpoint = f"{DGEN_PING_URL}/generate-token"
+        payload = {
+            "soeid": soeid,
+            "project_id": project_id
+        }
+    else:
+        endpoint = f"{DGEN_PING_URL}/generate-token-simple"
+        payload = {
+            "soeid": soeid
+        }
     
     try:
         response = requests.post(
-            f"{DGEN_PING_URL}/generate-token",
+            endpoint,
             headers=headers,
             json=payload
         )
@@ -61,6 +69,8 @@ def generate_jwt_token(soeid: str, project_id: str = "default"):
             print(f"Token: {result['token'][:50]}...")
             print(f"Project: {result['project_id']}")
             print(f"Type: {result['type']}")
+            if 'note' in result:
+                print(f"Note: {result['note']}")
             return result['token']
         else:
             print(f"❌ Token generation failed: {response.status_code} - {response.text}")
@@ -70,13 +80,23 @@ def generate_jwt_token(soeid: str, project_id: str = "default"):
         return None
 
 def verify_token(token: str):
-    """Verify a JWT token."""
+    """Verify a JWT token with enhanced error handling."""
     headers = {
         "X-Token-Secret": TOKEN_SECRET,
         "Content-Type": "application/json"
     }
     
-    payload = {"token": token}
+    # Clean the token
+    clean_token = token.strip()
+    
+    # Check for encoding issues
+    try:
+        clean_token.encode('utf-8')
+    except UnicodeEncodeError as e:
+        print(f"❌ Token encoding issue: {e}")
+        return False
+    
+    payload = {"token": clean_token}
     
     try:
         response = requests.post(
@@ -94,9 +114,16 @@ def verify_token(token: str):
                 return True
             else:
                 print(f"❌ Token is invalid: {result['error']}")
+                if 'suggestion' in result:
+                    print(f"💡 Suggestion: {result['suggestion']}")
                 return False
         else:
             print(f"❌ Token verification failed: {response.status_code}")
+            try:
+                error_data = response.json()
+                print(f"   Error: {error_data}")
+            except:
+                print(f"   Response: {response.text}")
             return False
     except Exception as e:
         print(f"❌ Token verification error: {e}")
@@ -227,11 +254,12 @@ def main():
     parser.add_argument("--prompt", "-p", help="Prompt to send to the LLM service")
     parser.add_argument("--metrics", "-m", action="store_true", help="Get metrics from the service")
     parser.add_argument("--info", "-i", action="store_true", help="Get service information")
-    parser.add_argument("--generate-token", "-g", help="Generate JWT token for the given SOEID")
+    parser.add_argument("--generate-token", "-g", help="Generate JWT token for the given SOEID (project_id optional)")
     parser.add_argument("--verify-token", "-v", help="Verify the given JWT token")
     parser.add_argument("--use-token", "-t", help="Use specific token for requests")
-    parser.add_argument("--project", help="Project ID for token generation", default="test_project")
+    parser.add_argument("--project", help="Project ID for token generation (optional, defaults to SOEID)")
     parser.add_argument("--soeid", help="SOEID for requests", default="test_user")
+    parser.add_argument("--debug-token", "-d", help="Debug and analyze the given token")
     parser.add_argument("--url", help=f"Service URL (default: {DGEN_PING_URL})")
     args = parser.parse_args()
     
@@ -243,6 +271,14 @@ def main():
     print(f"Service URL: {DGEN_PING_URL}")
     
     if not check_service():
+        return
+    
+    # Handle token debugging
+    if args.debug_token:
+        print(f"🔍 Debugging token: {args.debug_token[:50]}...")
+        # Run the token debug script
+        import subprocess
+        subprocess.run([sys.executable, "token_debug.py", args.debug_token])
         return
     
     # Handle token generation
@@ -278,10 +314,10 @@ def main():
         return
     
     # Otherwise run example workflow
-    print("\n=== JWT Token Demo ===")
+    print("\n=== JWT Token Demo (SOEID-only) ===")
     
-    # Generate a token for testing
-    test_token = generate_jwt_token(args.soeid, args.project)
+    # Generate a token for testing (no project specified)
+    test_token = generate_jwt_token(args.soeid)
     if test_token:
         # Verify the token
         print(f"\nVerifying generated token...")
