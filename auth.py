@@ -10,7 +10,7 @@ from typing import Optional
 from models import TokenPayload
 
 # Load secret key from environment variable
-DGEN_KEY = os.getenv("TOKEN_SECRET", "dgen_secret_key_change_in_production")
+DGEN_KEY = os.getenv("TOKEN_SECRET", "dgen_secret_key")
 
 # API key header security scheme
 api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
