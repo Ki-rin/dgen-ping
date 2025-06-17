@@ -16,9 +16,27 @@ class LlmResponse(BaseModel):
     model: str
     metadata: Dict[str, Any]
 
+class RequestMetadata(BaseModel):
+    client_id: str
+    soeid: str
+    project_name: str
+    target_service: str
+    endpoint: str
+    method: str
+    status_code: int
+    latency_ms: float
+    request_size: int
+    response_size: int
+    llm_model: Optional[str] = None
+    additional_data: Optional[Dict[str, Any]] = None
+
 class TelemetryEvent(BaseModel):
     event_type: str
+    request_id: str
+    client_ip: str
+    metadata: RequestMetadata
     timestamp: Optional[datetime] = None
-    metadata: Dict[str, Any]
-    client_ip: Optional[str] = None
-    request_id: Optional[str] = None
+
+class TokenPayload(BaseModel):
+    token_id: str
+    project_id: str
