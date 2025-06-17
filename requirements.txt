@@ -7,8 +7,7 @@ pymongo
 motor
 python-multipart
 python-dotenv
+PyJWT>=2.8.0
 dgen_llm
-
-
 dnspython  # Required for MongoDB connection
 aiofiles  # For async file operations
