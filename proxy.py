@@ -1,4 +1,3 @@
-
 """Proxy service for routing LLM requests using dgen_llm library with comprehensive telemetry."""
 import time
 import uuid
@@ -685,6 +684,44 @@ class ProxyService:
             }
 
     @staticmethod
+    async def _log_telemetry(
+        request, request_id, soeid, project_name, target, service_path, status_code, latency_ms, token_payload,
+        llm_model=None, llm_latency=None, token_counts=None, additional_data=None,
+        request_size=None, response_size=None
+    ):
+        """Record telemetry for proxied request (legacy method for backward compatibility)."""
+        try:
+            metadata = RequestMetadata(
+                client_id=token_payload.project_id,
+                soeid=soeid,
+                project_name=project_name,
+                target_service=target,
+                endpoint=service_path,
+                method=request.method,
+                status_code=status_code,
+                latency_ms=latency_ms,
+                request_size=request_size,
+                response_size=response_size,
+                prompt_tokens=token_counts.get("prompt", 0) if token_counts else 0,
+                completion_tokens=token_counts.get("completion", 0) if token_counts else 0,
+                total_tokens=token_counts.get("total", 0) if token_counts else 0,
+                llm_model=llm_model,
+                llm_latency=llm_latency,
+                additional_data=additional_data or {}
+            )
+            
+            event = TelemetryEvent(
+                event_type="proxy_request",
+                request_id=request_id,
+                client_ip=request.client.host,
+                metadata=metadata
+            )
+            
+            await db.log_telemetry(event)
+        except Exception as e:
+            logger.error(f"Failed to log telemetry: {e}")
+
+    @staticmethod
     async def _log_error_telemetry(
         request, request_id, soeid, project_name, target, path, 
         status_code, start_time, token_payload, request_size, error
@@ -704,23 +741,3 @@ class ProxyService:
             additional_data={"error": error},
             request_size=request_size
         )
-    
-    @staticmethod
-    async def _log_telemetry(
-        request, request_id, soeid, project_name, target, service_path, status_code, latency_ms, token_payload,
-        llm_model=None, llm_latency=None, token_counts=None, additional_data=None,
-        request_size=None, response_size=None
-    ):
-        """Record telemetry for proxied request (legacy method for backward compatibility)."""
-        try:
-            metadata = RequestMetadata(
-                client_id=token_payload.project_id,
-                soeid=soeid,
-                project_name=project_name,
-                target_service=target,
-                endpoint=service_path,
-                method=request.method,
-                status_code=status_code,
-                latency_ms=latency_ms,
-                request_size=request_size,
-                response
