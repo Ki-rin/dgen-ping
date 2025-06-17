@@ -64,47 +64,41 @@ async def health_check():
 # Token generation
 @app.post("/generate-token")
 async def generate_token_endpoint(
-    payload: Dict[str, Any] = Body(...),
+    payload: Dict[str, Any] = Body({"soeid": "default_user"}),
     x_token_secret: str = Header(..., alias="X-Token-Secret")
 ):
     """Generate JWT token."""
     if x_token_secret != DGEN_KEY:
         raise HTTPException(status_code=403, detail="Invalid token secret")
 
-    soeid = payload.get("soeid")
-    if not soeid:
-        raise HTTPException(status_code=400, detail="SOEID is required")
+    soeid = payload.get("soeid", "default_user")
     
     token = AuthManager.generate_token(soeid=soeid.strip())
     
     return {
         "token": token,
         "soeid": soeid,
-        "project_id": soeid,
         "timestamp": datetime.utcnow().isoformat()
     }
 
 # Token verification
 @app.post("/verify-token")
 async def verify_token_endpoint(
-    payload: Dict[str, Any] = Body(...),
+    payload: Dict[str, Any] = Body({"token": "1"}),
     x_token_secret: str = Header(..., alias="X-Token-Secret")
 ):
     """Verify JWT token."""
     if x_token_secret != DGEN_KEY:
         raise HTTPException(status_code=403, detail="Invalid token secret")
 
-    token = payload.get("token")
-    if not token:
-        return {"valid": False, "error": "Token is required"}
+    token = payload.get("token", "1")
     
     try:
         token_payload = AuthManager.verify_token(token=token.strip())
         return {
             "valid": True,
             "data": {
-                "soeid": token_payload.token_id,
-                "project_id": token_payload.project_id
+                "soeid": token_payload.token_id
             },
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -120,7 +114,14 @@ async def verify_token_endpoint(
 async def llm_completion(
     request: Request,
     background_tasks: BackgroundTasks,
-    payload: LlmRequest = Body(...),
+    payload: LlmRequest = Body({
+        "soeid": "default_user",
+        "project_name": "default_project",
+        "prompt": "Hello, how are you?",
+        "model": "gemini",
+        "temperature": 0.3,
+        "max_tokens": 10000
+    }),
     token: TokenPayload = Depends(get_token_payload)
 ):
     """Process LLM completion request."""
@@ -166,7 +167,23 @@ async def llm_completion(
 # Telemetry endpoint
 @app.post("/telemetry")
 async def telemetry_event(
-    event: TelemetryEvent,
+    event: TelemetryEvent = Body({
+        "event_type": "test_event",
+        "request_id": "test-123",
+        "client_ip": "127.0.0.1",
+        "metadata": {
+            "client_id": "default_user",
+            "soeid": "default_user",
+            "project_name": "default_project",
+            "target_service": "test",
+            "endpoint": "/test",
+            "method": "POST",
+            "status_code": 200,
+            "latency_ms": 100.0,
+            "request_size": 50,
+            "response_size": 200
+        }
+    }),
     token: TokenPayload = Depends(get_token_payload),
 ):
     """Log telemetry event."""
