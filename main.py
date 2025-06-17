@@ -459,31 +459,48 @@ async def get_db_status(token: TokenPayload = Depends(get_token_payload)):
 @app.post("/generate-token", tags=["Authentication"])
 async def generate_token_endpoint(
     soeid: str = Body(..., embed=True),
-    project_id: str = Body(default="default", embed=True),
+    project_id: str = Body(default=None, embed=True),
     x_token_secret: str = Header(...)
 ):
-    """Generate a JWT token for a user."""
+    """Generate a JWT token for a user. Only SOEID is required."""
     if x_token_secret != DGEN_KEY:
         raise HTTPException(status_code=403, detail="Invalid token secret")
 
     try:
+        # Clean and validate input
+        soeid = str(soeid).strip()
+        
+        if not soeid:
+            raise HTTPException(status_code=400, detail="SOEID cannot be empty")
+        
+        # Project ID is optional - defaults to soeid if not provided
+        if project_id:
+            project_id = str(project_id).strip()
+        
         token = AuthManager.generate_token(soeid=soeid, project_id=project_id)
+        
+        # Determine the actual project_id used
+        actual_project_id = project_id if project_id else soeid
         
         # Log token generation
         await db.log_connection_event(
             "token_generated",
             "success",
             f"Token generated for user {soeid}",
-            {"soeid": soeid, "project_id": project_id}
+            {"soeid": soeid, "project_id": actual_project_id}
         )
         
         return {
             "token": token,
             "soeid": soeid,
-            "project_id": project_id,
+            "project_id": actual_project_id,
             "type": "JWT",
-            "expires": "never"
+            "expires": "never",
+            "algorithm": "HS256",
+            "note": "project_id defaults to soeid if not specified"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         await db.log_connection_event(
             "token_generation_failed",
@@ -493,17 +510,83 @@ async def generate_token_endpoint(
         )
         raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
 
+@app.post("/generate-token-simple", tags=["Authentication"])
+async def generate_token_simple_endpoint(
+    soeid: str = Body(..., embed=True),
+    x_token_secret: str = Header(...)
+):
+    """Generate a JWT token for a user with only SOEID required."""
+    if x_token_secret != DGEN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid token secret")
+
+    try:
+        # Clean and validate input
+        soeid = str(soeid).strip()
+        
+        if not soeid:
+            raise HTTPException(status_code=400, detail="SOEID cannot be empty")
+        
+        # Generate token with soeid only (project_id will default to soeid)
+        token = AuthManager.generate_token(soeid=soeid)
+        
+        # Log token generation
+        await db.log_connection_event(
+            "token_generated_simple",
+            "success",
+            f"Simple token generated for user {soeid}",
+            {"soeid": soeid, "project_id": soeid}
+        )
+        
+        return {
+            "token": token,
+            "soeid": soeid,
+            "project_id": soeid,  # Same as soeid
+            "type": "JWT",
+            "expires": "never",
+            "algorithm": "HS256"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.log_connection_event(
+            "token_generation_failed",
+            "error",
+            f"Simple token generation failed for user {soeid}: {str(e)}",
+            {"soeid": soeid, "error": str(e)}
+        )
+        raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
+
 @app.post("/verify-token", tags=["Authentication"])
 async def verify_token_endpoint(
     token: str = Body(..., embed=True),
     x_token_secret: str = Header(...)
 ):
-    """Verify a JWT token."""
+    """Verify a JWT token with enhanced error handling."""
     if x_token_secret != DGEN_KEY:
         raise HTTPException(status_code=403, detail="Invalid token secret")
 
     try:
-        payload = AuthManager.verify_token(token=token)
+        # Clean token input
+        clean_token = str(token).strip()
+        
+        # Basic validation
+        if not clean_token:
+            return {
+                "valid": False,
+                "error": "Empty token",
+                "type": "JWT"
+            }
+        
+        # Check for common encoding issues
+        if len(clean_token.encode('utf-8')) != len(clean_token):
+            return {
+                "valid": False,
+                "error": "Token contains non-ASCII characters",
+                "type": "JWT"
+            }
+        
+        # Verify token
+        payload = AuthManager.verify_token(token=clean_token)
         return {
             "valid": True,
             "data": {
@@ -517,12 +600,20 @@ async def verify_token_endpoint(
         return {
             "valid": False,
             "error": e.detail,
-            "type": "JWT"
+            "type": "JWT",
+            "status_code": e.status_code
+        }
+    except UnicodeDecodeError as e:
+        return {
+            "valid": False,
+            "error": f"Token encoding error: {str(e)}",
+            "type": "JWT",
+            "suggestion": "Ensure token contains only valid UTF-8 characters"
         }
     except Exception as e:
         return {
             "valid": False,
-            "error": str(e),
+            "error": f"Unexpected error: {str(e)}",
             "type": "JWT"
         }
 
