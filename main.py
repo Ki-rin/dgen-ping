@@ -16,7 +16,7 @@ from config import settings
 from db import db
 from auth import get_token_payload, get_token_payload_optional, TokenPayload, AuthManager, DGEN_KEY
 from proxy import ProxyService
-from models import TelemetryEvent, LlmRequest, LlmResponse
+from models import TelemetryEvent, LlmRequest, LlmResponse, RequestMetadata, TokenPayload
 from middleware import TelemetryMiddleware, RateLimitMiddleware
 
 # Configure logging
@@ -362,7 +362,7 @@ async def llm_completion(
         return TelemetryEvent(
             event_type="llm_api_call",
             request_id=request_id,
-            client_ip=request.client.host,
+            client_ip=request.client.host if request.client else "unknown",
             metadata=RequestMetadata(
                 client_id=token.project_id,
                 soeid=payload.soeid,
@@ -499,7 +499,7 @@ async def llm_chat(
         return TelemetryEvent(
             event_type="llm_chat_call",
             request_id=request_id,
-            client_ip=request.client.host,
+            client_ip=request.client.host if request.client else "unknown",
             metadata=RequestMetadata(
                 client_id=token.project_id,
                 soeid=payload.soeid,
@@ -662,99 +662,6 @@ async def get_telemetry_events(
             limit = 1000  # Cap at 1000 for performance
         if limit < 1:
             limit = 50
-        if skip < 0:
-            skip = 0
-        if time_window_hours > 168:  # Max 1 week
-            time_window_hours = 168
-
-        if db.is_connected:
-            # Build query filter
-            from datetime import timedelta
-            window_start = datetime.utcnow() - timedelta(hours=time_window_hours)
-            
-            query = {
-                "timestamp": {"$gte": window_start}
-            }
-            
-            if event_type:
-                query["event_type"] = event_type
-            if soeid:
-                query["metadata.soeid"] = soeid
-            if project:
-                query["metadata.project_name"] = project
-
-            # Get telemetry events from MongoDB
-            collection = db.async_client[settings.DB_NAME].telemetry
-            cursor = collection.find(query).sort("timestamp", -1).skip(skip).limit(limit)
-            events = await cursor.to_list(limit)
-
-            # Format for response
-            formatted_events = []
-            for event in events:
-                event["event_id"] = str(event["_id"])  # Convert ObjectId to string
-                event.pop("_id", None)  # Remove original _id
-                if isinstance(event.get("timestamp"), datetime):
-                    event["timestamp"] = event["timestamp"].isoformat()
-                formatted_events.append(event)
-
-            total_count = await collection.count_documents(query)
-
-            return {
-                "total": total_count,
-                "skip": skip,
-                "limit": limit,
-                "time_window_hours": time_window_hours,
-                "filters": {
-                    "event_type": event_type,
-                    "soeid": soeid,
-                    "project": project
-                },
-                "results": formatted_events,
-                "source": "database",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        else:
-            return {
-                "total": 0,
-                "skip": skip,
-                "limit": limit,
-                "time_window_hours": time_window_hours,
-                "results": [],
-                "source": "csv_fallback",
-                "note": "Database not connected, using CSV fallback. Telemetry data limited.",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-    except Exception as e:
-        logger.error(f"Error retrieving telemetry events: {e}")
-        return {
-            "total": 0,
-            "skip": skip,
-            "limit": limit,
-            "time_window_hours": time_window_hours,
-            "results": [],
-            "error": str(e),
-            "source": "error",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-# History and data endpoints
-@app.get("/llm-history", tags=["LLM"])
-async def get_llm_history(
-    request: Request,
-    limit: int = 10,
-    skip: int = 0,
-    soeid: str = None,
-    project: str = None,
-    token: TokenPayload = Depends(get_token_payload)
-):
-    """Get historical LLM runs with filtering options and error handling."""
-    try:
-        # Validate parameters
-        if limit > 100:
-            limit = 100  # Cap at 100 for performance
-        if limit < 1:
-            limit = 10
         if skip < 0:
             skip = 0
 
@@ -1202,4 +1109,97 @@ if __name__ == "__main__":
         logger.info("Server stopped by user")
     except Exception as e:
         logger.error(f"Server startup failed: {e}")
-        raise
+        raise = 0
+        if time_window_hours > 168:  # Max 1 week
+            time_window_hours = 168
+
+        if db.is_connected:
+            # Build query filter
+            from datetime import timedelta
+            window_start = datetime.utcnow() - timedelta(hours=time_window_hours)
+            
+            query = {
+                "timestamp": {"$gte": window_start}
+            }
+            
+            if event_type:
+                query["event_type"] = event_type
+            if soeid:
+                query["metadata.soeid"] = soeid
+            if project:
+                query["metadata.project_name"] = project
+
+            # Get telemetry events from MongoDB
+            collection = db.async_client[settings.DB_NAME].telemetry
+            cursor = collection.find(query).sort("timestamp", -1).skip(skip).limit(limit)
+            events = await cursor.to_list(limit)
+
+            # Format for response
+            formatted_events = []
+            for event in events:
+                event["event_id"] = str(event["_id"])  # Convert ObjectId to string
+                event.pop("_id", None)  # Remove original _id
+                if isinstance(event.get("timestamp"), datetime):
+                    event["timestamp"] = event["timestamp"].isoformat()
+                formatted_events.append(event)
+
+            total_count = await collection.count_documents(query)
+
+            return {
+                "total": total_count,
+                "skip": skip,
+                "limit": limit,
+                "time_window_hours": time_window_hours,
+                "filters": {
+                    "event_type": event_type,
+                    "soeid": soeid,
+                    "project": project
+                },
+                "results": formatted_events,
+                "source": "database",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            return {
+                "total": 0,
+                "skip": skip,
+                "limit": limit,
+                "time_window_hours": time_window_hours,
+                "results": [],
+                "source": "csv_fallback",
+                "note": "Database not connected, using CSV fallback. Telemetry data limited.",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    except Exception as e:
+        logger.error(f"Error retrieving telemetry events: {e}")
+        return {
+            "total": 0,
+            "skip": skip,
+            "limit": limit,
+            "time_window_hours": time_window_hours,
+            "results": [],
+            "error": str(e),
+            "source": "error",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+# History and data endpoints
+@app.get("/llm-history", tags=["LLM"])
+async def get_llm_history(
+    request: Request,
+    limit: int = 10,
+    skip: int = 0,
+    soeid: str = None,
+    project: str = None,
+    token: TokenPayload = Depends(get_token_payload)
+):
+    """Get historical LLM runs with filtering options and error handling."""
+    try:
+        # Validate parameters
+        if limit > 100:
+            limit = 100  # Cap at 100 for performance
+        if limit < 1:
+            limit = 10
+        if skip < 0:
+            skip
