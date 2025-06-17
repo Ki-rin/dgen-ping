@@ -2,8 +2,8 @@
 import time
 import logging
 from datetime import datetime
-from fastapi import HTTPException
-from models import LlmRequest, LlmResponse
+from fastapi import HTTPException, Request
+from models import LlmRequest, LlmResponse, TokenPayload
 from config import settings
 
 # Import dgen_llm with fallback
@@ -19,6 +19,20 @@ except ImportError:
     LLM_AVAILABLE = False
 
 logger = logging.getLogger("dgen-ping.proxy")
+
+class ProxyService:
+    @staticmethod
+    async def initialize():
+        """Initialize proxy service."""
+        logger.info(f"ProxyService initialized - LLM Available: {LLM_AVAILABLE}")
+    
+    @staticmethod
+    async def proxy_request(service_type: str, request: Request, payload: LlmRequest, token: TokenPayload) -> LlmResponse:
+        """Proxy request to appropriate service."""
+        if service_type == "llm":
+            return await process_llm_request(payload, getattr(request.state, 'request_id', None))
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown service type: {service_type}")
 
 async def process_llm_request(payload: LlmRequest, request_id: str = None) -> LlmResponse:
     """Process LLM request using dgen_llm."""
