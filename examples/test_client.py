@@ -5,7 +5,7 @@ import sys
 import time
 
 URL = "http://127.0.0.1:8001"
-SECRET = "dgen_secret_key_change_in_production"
+SECRET = "dgen_secret_key"
 
 def check_service():
     """Check if service is running."""
@@ -18,7 +18,7 @@ def check_service():
         print(f"❌ Service not running: {e}")
         return False
 
-def generate_token(soeid):
+def generate_token(soeid="default_user"):
     """Generate JWT token."""
     headers = {"X-Token-Secret": SECRET, "Content-Type": "application/json"}
     payload = {"soeid": soeid}
@@ -27,7 +27,7 @@ def generate_token(soeid):
         resp = requests.post(f"{URL}/generate-token", headers=headers, json=payload, timeout=10)
         if resp.status_code == 200:
             result = resp.json()
-            print(f"✅ Token generated for {soeid}")
+            print(f"✅ Token generated for {result['soeid']}")
             return result['token']
         else:
             print(f"❌ Token failed: {resp.text}")
@@ -36,7 +36,7 @@ def generate_token(soeid):
         print(f"❌ Token error: {e}")
         return None
 
-def verify_token(token):
+def verify_token(token="1"):
     """Verify JWT token."""
     headers = {"X-Token-Secret": SECRET, "Content-Type": "application/json"}
     payload = {"token": token}
@@ -54,14 +54,16 @@ def verify_token(token):
         print(f"❌ Verify error: {e}")
         return False
 
-def test_llm(prompt, token, soeid):
+def test_llm(prompt="Hello, how are you?", token="1", soeid="default_user"):
     """Test LLM completion."""
     headers = {"X-API-Token": token, "Content-Type": "application/json"}
     payload = {
         "soeid": soeid,
-        "project_name": soeid,
+        "project_name": "default_project",
         "prompt": prompt,
-        "model": "gemini"
+        "model": "gemini",
+        "temperature": 0.3,
+        "max_tokens": 10000
     }
     
     start_time = time.time()
@@ -81,7 +83,7 @@ def test_llm(prompt, token, soeid):
         print(f"❌ LLM error: {e}")
         return None
 
-def test_telemetry(token, soeid):
+def test_telemetry(token="1", soeid="default_user"):
     """Test telemetry logging."""
     headers = {"X-API-Token": token, "Content-Type": "application/json"}
     payload = {
@@ -91,7 +93,7 @@ def test_telemetry(token, soeid):
         "metadata": {
             "client_id": soeid,
             "soeid": soeid,
-            "project_name": "test",
+            "project_name": "default_project",
             "target_service": "test",
             "endpoint": "/test",
             "method": "POST",
@@ -116,7 +118,7 @@ def test_telemetry(token, soeid):
         return False
 
 def main():
-    soeid = sys.argv[1] if len(sys.argv) > 1 else "test_user"
+    soeid = sys.argv[1] if len(sys.argv) > 1 else "default_user"
     prompt = sys.argv[2] if len(sys.argv) > 2 else "Hello, how are you?"
     
     print(f"Testing dgen-ping with SOEID: {soeid}")
@@ -129,10 +131,10 @@ def main():
     # 2. Generate and verify token
     token = generate_token(soeid)
     if not token:
-        print("Using default token")
+        print("Using default token: 1")
         token = "1"
-    else:
-        verify_token(token)
+    
+    verify_token(token)
     
     # 3. Test LLM completion
     test_llm(prompt, token, soeid)
