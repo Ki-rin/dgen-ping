@@ -1212,9 +1212,11 @@ if __name__ == "__main__":
         
         logger.info("✅ All pre-flight checks passed")
         logger.info(f"🌐 API will be available at: http://{settings.HOST}:{settings.PORT}")
+        
         if settings.DEBUG:
             logger.info(f"📚 API documentation: http://{settings.HOST}:{settings.PORT}/docs")
-        logger.info("🏥 Health check: http://{settings.HOST}:{settings.PORT}/health")
+        
+        logger.info(f"🏥 Health check: http://{settings.HOST}:{settings.PORT}/health")
         logger.info("=" * 60)
         
         # Start the server
