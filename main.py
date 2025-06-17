@@ -23,12 +23,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("dgen-ping")
 
+from contextlib import asynccontextmanager
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup."""
+    logger.info("Starting dgen-ping service...")
+    await db.initialize()
+    await ProxyService.initialize()
+    logger.info("dgen-ping started successfully")
+
 # Create FastAPI app
 app = FastAPI(
     title="dgen-ping",
     description="LLM proxy with telemetry tracking",
     version="1.0.0",
-    docs_url="/docs" if settings.DEBUG else None
+    docs_url="/docs" if settings.DEBUG else None,
+    lifespan=lifespan
 )
 
 # Add CORS
