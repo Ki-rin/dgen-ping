@@ -1,5 +1,9 @@
 """Configuration for dgen-ping."""
 import os
+from dotenv import load_dotenv
+
+# Load all environment variables from .env file
+load_dotenv(override=True)
 
 class Settings:
     # Core settings
@@ -32,5 +36,23 @@ class Settings:
     DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "10000"))
     DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.3"))
     LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "120"))
+    
+    # LLM Authentication
+    CLIENT_ID = os.getenv("CLIENT_ID", "")
+    CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
+    SCOPE = os.getenv("SCOPE", "")
+    
+    # LLM Service URLs
+    COIN_URL = os.getenv("COIN_URL", "")
+    API_TRANSPORT = os.getenv("API_TRANSPORT", "")
+    API_ENDPOINT = os.getenv("API_ENDPOINT", "")
+    SURL = os.getenv("SURL", "")
+    
+    # LLM Model Configuration
+    MODEL = os.getenv("MODEL", "")
+    TEMPERATURE = os.getenv("TEMPERATURE", "")
+    SKEY = os.getenv("SKEY", "")
+    SMODEL = os.getenv("SMODEL", "")
+    PROJECT_ID = os.getenv("PROJECT_ID", "")
 
 settings = Settings()
