@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from fastapi.security import APIKeyHeader
 
-TOKEN_SECRET = os.getenv("TOKEN_SECRET", "dgen_secret_key_change_in_production")
+TOKEN_SECRET = os.getenv("TOKEN_SECRET", "dgen_secret_key")
 ALLOW_DEFAULT_TOKEN = os.getenv("ALLOW_DEFAULT_TOKEN", "true").lower() == "true"
 
 api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
