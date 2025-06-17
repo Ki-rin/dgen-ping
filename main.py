@@ -1085,31 +1085,165 @@ async def root():
 
 # Application entry point
 if __name__ == "__main__":
+    import asyncio
     import uvicorn
+    import signal
+    import sys
+    
+    def signal_handler(signum, frame):
+        """Handle shutdown signals gracefully."""
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        sys.exit(0)
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Validate configuration before starting
+    try:
+        logger.info("Validating configuration...")
+        settings.validate_settings()
+        logger.info("✅ Configuration valid")
+    except Exception as e:
+        logger.error(f"❌ Configuration validation failed: {e}")
+        sys.exit(1)
     
     # Determine number of workers based on environment
-    workers = 1 if settings.DEBUG else settings.WORKERS
+    # Use single worker for development/debug mode to enable reload
+    workers = 1 if settings.DEBUG else min(settings.WORKERS, 4)
     
-    logger.info(f"Starting dgen-ping server on {settings.HOST}:{settings.PORT}")
+    # Log startup information
+    logger.info("=" * 60)
+    logger.info("🚀 Starting dgen-ping LLM Proxy Service")
+    logger.info("=" * 60)
+    logger.info(f"Host: {settings.HOST}")
+    logger.info(f"Port: {settings.PORT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(f"Workers: {workers}")
     logger.info(f"Max concurrency: {settings.MAX_CONCURRENCY}")
+    logger.info(f"Rate limit: {settings.RATE_LIMIT} req/min")
+    logger.info(f"Allow default token: {settings.ALLOW_DEFAULT_TOKEN}")
+    logger.info(f"Database: {'MongoDB' if settings.MONGO_URI else 'CSV Fallback'}")
+    logger.info("=" * 60)
+    
+    # Configure uvicorn settings
+    uvicorn_config = {
+        "app": "main:app",
+        "host": settings.HOST,
+        "port": settings.PORT,
+        "log_level": "debug" if settings.DEBUG else "info",
+        "access_log": settings.DEBUG,
+        "server_header": False,  # Don't expose server version
+        "date_header": False,    # Don't include date header
+    }
+    
+    # Add reload only in debug mode and single worker
+    if settings.DEBUG and workers == 1:
+        uvicorn_config.update({
+            "reload": True,
+            "reload_dirs": ["."],
+            "reload_includes": ["*.py"],
+            "reload_excludes": ["*.pyc", "__pycache__", ".git"]
+        })
+        logger.info("🔄 Auto-reload enabled (debug mode)")
+    else:
+        uvicorn_config["workers"] = workers
+        logger.info(f"👥 Multi-worker mode: {workers} workers")
+    
+    # Additional production settings
+    if not settings.DEBUG:
+        uvicorn_config.update({
+            "loop": "uvloop",  # Use uvloop for better performance
+            "http": "httptools",  # Use httptools for better HTTP parsing
+            "backlog": 2048,   # Increase connection backlog
+            "timeout_keep_alive": 5,  # Keep-alive timeout
+            "timeout_graceful_shutdown": 30,  # Graceful shutdown timeout
+        })
+        logger.info("⚡ Production optimizations enabled")
     
     try:
-        uvicorn.run(
-            "main:app",
-            host=settings.HOST,
-            port=settings.PORT,
-            reload=settings.DEBUG,
-            workers=workers,
-            log_level="debug" if settings.DEBUG else "info",
-            access_log=settings.DEBUG
-        )
+        # Pre-flight checks
+        logger.info("🔍 Running pre-flight checks...")
+        
+        # Check if port is available
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((settings.HOST, settings.PORT))
+                logger.info(f"✅ Port {settings.PORT} is available")
+            except OSError as e:
+                logger.error(f"❌ Port {settings.PORT} is not available: {e}")
+                logger.error(f"   Please choose a different port or stop the service using port {settings.PORT}")
+                sys.exit(1)
+        
+        # Test imports
+        try:
+            from db import db
+            from proxy import ProxyService
+            logger.info("✅ Core modules imported successfully")
+        except ImportError as e:
+            logger.error(f"❌ Failed to import core modules: {e}")
+            sys.exit(1)
+        
+        # Initialize async components if needed
+        if hasattr(asyncio, 'run'):
+            # Python 3.7+
+            async def async_startup_check():
+                """Async startup validation."""
+                try:
+                    # Quick database connection test
+                    await db.initialize()
+                    logger.info(f"✅ Database status: {'Connected' if db.is_connected else 'CSV Fallback'}")
+                    
+                    # Initialize proxy service
+                    await ProxyService.initialize()
+                    logger.info("✅ Proxy service initialized")
+                    
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️  Startup check warning: {e}")
+                    return True  # Continue anyway, services will handle errors
+            
+            # Run async startup check
+            startup_ok = asyncio.run(async_startup_check())
+            if not startup_ok:
+                logger.error("❌ Startup checks failed")
+                sys.exit(1)
+        
+        logger.info("✅ All pre-flight checks passed")
+        logger.info(f"🌐 API will be available at: http://{settings.HOST}:{settings.PORT}")
+        if settings.DEBUG:
+            logger.info(f"📚 API documentation: http://{settings.HOST}:{settings.PORT}/docs")
+        logger.info("🏥 Health check: http://{settings.HOST}:{settings.PORT}/health")
+        logger.info("=" * 60)
+        
+        # Start the server
+        uvicorn.run(**uvicorn_config)
+        
     except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        logger.info("\n⏹️  Server stopped by user (Ctrl+C)")
+        sys.exit(0)
+    except SystemExit:
+        # Re-raise SystemExit to allow proper exit
+        raise
     except Exception as e:
-        logger.error(f"Server startup failed: {e}")
-        raise = 0
+        logger.error(f"❌ Server startup failed: {e}")
+        logger.error("Full error details:", exc_info=True)
+        
+        # Provide helpful error messages
+        if "port" in str(e).lower() or "address" in str(e).lower():
+            logger.error(f"💡 Port {settings.PORT} might be in use. Try:")
+            logger.error(f"   - Use a different port: PORT=8002 python main.py")
+            logger.error(f"   - Kill existing process: lsof -ti:{settings.PORT} | xargs kill")
+        
+        if "permission" in str(e).lower():
+            logger.error("💡 Permission denied. Try:")
+            logger.error("   - Use a port > 1024 (e.g., 8001)")
+            logger.error("   - Run with appropriate permissions")
+        
+        sys.exit(1)
+    finally:
+        logger.info("🔚 Server shutdown complete") = 0
         if time_window_hours > 168:  # Max 1 week
             time_window_hours = 168
 
