@@ -4,6 +4,7 @@ import logging
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.responses import JSONResponse
 from models import TelemetryEvent, RequestMetadata
 from db import db
 
@@ -16,7 +17,7 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
         """Process request and capture telemetry."""
         # Skip telemetry for system endpoints
         path = request.url.path
-        if path in ["/health", "/docs", "/openapi.json"] or path.startswith("/static"):
+        if path in ["/health", "/docs", "/openapi.json", "/redoc"] or path.startswith("/static"):
             return await call_next(request)
             
         # Start timing
@@ -62,11 +63,15 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
                     event = TelemetryEvent(
                         event_type="direct_request",
                         metadata=metadata,
-                        client_ip=request.client.host,
+                        client_ip=request.client.host if request.client else "unknown",
                         request_id=request_id
                     )
                     
-                    await db.log_telemetry(event)
+                    # Log telemetry asynchronously to avoid blocking
+                    try:
+                        await db.log_telemetry(event)
+                    except Exception as log_error:
+                        logger.error(f"Failed to log telemetry: {log_error}")
             except Exception as e:
                 logger.error(f"Error logging telemetry: {str(e)}")
 
@@ -80,7 +85,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next):
         """Apply rate limiting to requests."""
-        client_ip = request.client.host
+        # Skip rate limiting for health checks and docs
+        if request.url.path in ["/health", "/public/health", "/docs", "/openapi.json", "/redoc"]:
+            return await call_next(request)
+            
+        client_ip = request.client.host if request.client else "unknown"
         current_time = time.time()
         
         # Clean up old entries
@@ -93,9 +102,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             
             if current_time - window_start < 60:
                 if requests >= self.rate_limit:
-                    return Response(
-                        content={"error": "Rate limit exceeded"},
-                        status_code=429
+                    return JSONResponse(
+                        status_code=429,
+                        content={
+                            "error": "Rate limit exceeded",
+                            "message": f"Maximum {self.rate_limit} requests per minute allowed",
+                            "retry_after": 60 - int(current_time - window_start),
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(current_time))
+                        }
                     )
                 self.clients[client_ip]["requests"] += 1
             else:
