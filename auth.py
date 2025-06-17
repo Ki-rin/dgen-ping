@@ -1,347 +1,417 @@
-#!/usr/bin/env python
-"""Test client for dgen-ping LLM proxy with JWT token support.
-
-This script demonstrates how to make requests to the dgen-ping proxy service,
-which uses JWT tokens for authentication and dgen_llm for content generation.
-"""
-import requests
-import json
-import time
-import sys
-import argparse
+"""Authentication and authorization for dgen-ping with JWT-based tokens."""
 import os
+import jwt
+import uuid
+from datetime import datetime, timezone
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
+from starlette.status import HTTP_401_UNAUTHORIZED
+from typing import Optional
+from models import TokenPayload
 
-DGEN_PING_URL = "http://127.0.0.1:8001"
-DEFAULT_TOKEN = "1"  # Default token allowed by configuration
-TOKEN_SECRET = os.getenv("TOKEN_SECRET", "dgen_secret_key_change_in_production")
+# Load secret key from environment variable
+DGEN_KEY = os.getenv("TOKEN_SECRET", "dgen_secret_key_change_in_production")
 
-def check_service():
-    """Check if the service is running."""
-    try:
-        # Check dgen-ping health
-        ping_response = requests.get(f"{DGEN_PING_URL}/health")
-        ping_status = ping_response.json()
-        print(f"dgen-ping: {ping_status['status']}")
-        
-        # Show database status
-        db_status = ping_status.get('database', {}).get('status', 'unknown')
-        print(f"Database: {db_status}")
-        
-        if ping_status.get('database', {}).get('csv_fallback_active', False):
-            print("📝 CSV fallback mode active")
-        
-        return True
-    except Exception as e:
-        print(f"Error connecting to service: {e}")
-        print("\nMake sure the dgen-ping service is running first!")
-        return False
+# API key header security scheme
+api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
 
-def generate_jwt_token(soeid: str, project_id: str = "default"):
-    """Generate a JWT token for the given user."""
-    headers = {
-        "X-Token-Secret": TOKEN_SECRET,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "soeid": soeid,
-        "project_id": project_id
-    }
-    
-    try:
-        response = requests.post(
-            f"{DGEN_PING_URL}/generate-token",
-            headers=headers,
-            json=payload
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"\n✅ JWT Token generated for {soeid}:")
-            print(f"Token: {result['token'][:50]}...")
-            print(f"Project: {result['project_id']}")
-            print(f"Type: {result['type']}")
-            return result['token']
-        else:
-            print(f"❌ Token generation failed: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        print(f"❌ Token generation error: {e}")
-        return None
+class AuthManager:
+    """JWT-based authentication and authorization manager."""
 
-def verify_token(token: str):
-    """Verify a JWT token with enhanced error handling."""
-    headers = {
-        "X-Token-Secret": TOKEN_SECRET,
-        "Content-Type": "application/json"
-    }
-    
-    # Clean the token
-    clean_token = token.strip()
-    
-    # Check for encoding issues
-    try:
-        clean_token.encode('utf-8')
-    except UnicodeEncodeError as e:
-        print(f"❌ Token encoding issue: {e}")
-        return False
-    
-    payload = {"token": clean_token}
-    
-    try:
-        response = requests.post(
-            f"{DGEN_PING_URL}/verify-token",
-            headers=headers,
-            json=payload
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result['valid']:
-                print(f"✅ Token is valid")
-                print(f"User: {result['data']['soeid']}")
-                print(f"Project: {result['data']['project_id']}")
-                return True
-            else:
-                print(f"❌ Token is invalid: {result['error']}")
-                if 'suggestion' in result:
-                    print(f"💡 Suggestion: {result['suggestion']}")
-                return False
-        else:
-            print(f"❌ Token verification failed: {response.status_code}")
-            try:
-                error_data = response.json()
-                print(f"   Error: {error_data}")
-            except:
-                print(f"   Response: {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Token verification error: {e}")
-        return False
+    @staticmethod
+    def generate_token(soeid: str, project_id: str = "default") -> str:
+        """
+        Generate a JWT token based on soeid and project_id.
+        No expiration - tokens are permanent until secret changes.
+        """
+        if not soeid:
+            raise HTTPException(status_code=400, detail="SOEID is required to generate a token")
 
-def make_llm_request(prompt, token=None, model="gpt-4", max_tokens=2000, temperature=0.7, soeid="test_user", project="test_project"):
-    """Make an LLM request through the dgen-ping proxy."""
-    # Use default token if none provided
-    auth_token = token or DEFAULT_TOKEN
-    
-    headers = {
-        "X-API-Token": auth_token,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "soeid": soeid,
-        "project_name": project,
-        "prompt": prompt,
-        "model": model,
-        "max_tokens": max_tokens,
-        "temperature": temperature
-    }
-    
-    print(f"\nSending request: \"{prompt}\"")
-    if auth_token != DEFAULT_TOKEN:
-        print(f"Using JWT token: {auth_token[:20]}...")
-    else:
-        print("Using default token")
-    
-    try:
-        start_time = time.time()
-        response = requests.post(
-            f"{DGEN_PING_URL}/api/llm/completion",
-            headers=headers,
-            json=payload
-        )
-        
-        elapsed = time.time() - start_time
-        
-        if response.status_code == 200:
-            result = response.json()
-            print("\n=== LLM Response ===")
-            print(f"Completion: {result['completion']}")
-            print("\n=== Metadata ===")
-            print(f"Model: {result['model']}")
-            print(f"Latency: {elapsed:.2f} seconds")
-            
-            if 'metadata' in result and 'tokens' in result['metadata']:
-                tokens = result['metadata']['tokens']
-                print(f"Tokens: {tokens.get('prompt', 0)} prompt, "
-                      f"{tokens.get('completion', 0)} completion, "
-                      f"{tokens.get('total', 0)} total")
-            
-            return result
-        else:
-            print(f"❌ Error: {response.status_code} - {response.text}")
-            return None
-    
-    except Exception as e:
-        print(f"❌ Request error: {e}")
-        return None
+        # Ensure soeid is clean and contains only valid characters
+        import re
+        if not re.match(r'^[a-zA-Z0-9._-]+
 
-def get_metrics(token=None):
-    """Get metrics from dgen-ping."""
-    auth_token = token or DEFAULT_TOKEN
-    headers = {"X-API-Token": auth_token}
-    
-    try:
-        response = requests.get(f"{DGEN_PING_URL}/metrics", headers=headers)
-        
-        if response.status_code == 200:
-            metrics = response.json()
-            print("\n=== dgen-ping Metrics ===")
-            print(f"Total requests: {metrics.get('requests_total', 0)}")
-            print(f"Requests last hour: {metrics.get('requests_last_hour', 0)}")
-            print(f"Average latency (ms): {metrics.get('avg_latency_ms', 0):.2f}")
-            print(f"Error rate: {metrics.get('error_rate', 0):.2%}")
-            print(f"Total token usage: {metrics.get('token_usage_total', 0)}")
-            print(f"Database status: {metrics.get('database_status', 'unknown')}")
-            return metrics
-        else:
-            print(f"❌ Error getting metrics: {response.status_code} - {response.text}")
-            return None
-    
-    except Exception as e:
-        print(f"❌ Metrics error: {e}")
-        return None
-
-def get_service_info(token=None):
-    """Get detailed service information."""
-    auth_token = token or DEFAULT_TOKEN
-    headers = {"X-API-Token": auth_token}
-    
-    try:
-        response = requests.get(f"{DGEN_PING_URL}/info", headers=headers)
-        
-        if response.status_code == 200:
-            info = response.json()
-            print("\n=== Service Information ===")
-            print(f"Service: {info.get('service', 'unknown')}")
-            print(f"Version: {info.get('version', 'unknown')}")
-            
-            auth_info = info.get('authentication', {})
-            print(f"Auth type: {auth_info.get('token_type', 'unknown')}")
-            print(f"Project ID: {auth_info.get('project_id', 'unknown')}")
-            print(f"User ID: {auth_info.get('user_id', 'unknown')}")
-            
-            db_info = info.get('database', {})
-            print(f"Database: {db_info.get('status', 'unknown')}")
-            
-            perf_info = info.get('performance', {})
-            print(f"Active requests: {perf_info.get('active_requests', 'unknown')}")
-            print(f"Max concurrency: {perf_info.get('max_concurrency', 'unknown')}")
-            
-            return info
-        else:
-            print(f"❌ Error getting service info: {response.status_code} - {response.text}")
-            return None
-    
-    except Exception as e:
-        print(f"❌ Service info error: {e}")
-        return None
-
-def main():
-    """Main function to run test requests."""
-    parser = argparse.ArgumentParser(description="Test client for dgen-ping LLM proxy with JWT support")
-    parser.add_argument("--prompt", "-p", help="Prompt to send to the LLM service")
-    parser.add_argument("--metrics", "-m", action="store_true", help="Get metrics from the service")
-    parser.add_argument("--info", "-i", action="store_true", help="Get service information")
-    parser.add_argument("--generate-token", "-g", help="Generate JWT token for the given SOEID")
-    parser.add_argument("--verify-token", "-v", help="Verify the given JWT token")
-    parser.add_argument("--use-token", "-t", help="Use specific token for requests")
-    parser.add_argument("--project", help="Project ID for token generation", default="test_project")
-    parser.add_argument("--soeid", help="SOEID for requests", default="test_user")
-    parser.add_argument("--debug-token", "-d", help="Debug and analyze the given token")
-    parser.add_argument("--url", help=f"Service URL (default: {DGEN_PING_URL})")
-    args = parser.parse_args()
-    
-    global DGEN_PING_URL
-    if args.url:
-        DGEN_PING_URL = args.url
-    
-    print("=== dgen-ping Test Client (JWT Support) ===")
-    print(f"Service URL: {DGEN_PING_URL}")
-    
-    if not check_service():
-        return
-    
-    # Handle token debugging
-    if args.debug_token:
-        print(f"🔍 Debugging token: {args.debug_token[:50]}...")
-        # Run the token debug script
-        import subprocess
-        subprocess.run([sys.executable, "token_debug.py", args.debug_token])
-        return
-    
-    # Handle token generation
-    if args.generate_token:
-        token = generate_jwt_token(args.generate_token, args.project)
-        if token:
-            print(f"\n💡 You can now use this token with: --use-token {token}")
-        return
-    
-    # Handle token verification
-    if args.verify_token:
-        verify_token(args.verify_token)
-        return
-    
-    # Handle metrics request
-    if args.metrics:
-        get_metrics(args.use_token)
-        return
-    
-    # Handle service info request
-    if args.info:
-        get_service_info(args.use_token)
-        return
-    
-    # Handle specific prompt
-    if args.prompt:
-        make_llm_request(
-            args.prompt, 
-            token=args.use_token,
-            soeid=args.soeid,
-            project=args.project
-        )
-        return
-    
-    # Otherwise run example workflow
-    print("\n=== JWT Token Demo ===")
-    
-    # Generate a token for testing
-    test_token = generate_jwt_token(args.soeid, args.project)
-    if test_token:
-        # Verify the token
-        print(f"\nVerifying generated token...")
-        verify_token(test_token)
-    
-    # Run example prompts
-    prompts = [
-        "Explain how JWT tokens work.",
-        "Write a haiku about secure authentication.",
-        "What are the benefits of stateless authentication?"
-    ]
-    
-    print("\n=== Testing with Default Token ===")
-    for prompt in prompts[:1]:  # Just one with default token
-        result = make_llm_request(prompt, soeid=args.soeid, project=args.project)
-        if result:
-            time.sleep(1)
-    
-    if test_token:
-        print("\n=== Testing with JWT Token ===")
-        for prompt in prompts[1:]:  # Rest with JWT token
-            result = make_llm_request(
-                prompt, 
-                token=test_token,
-                soeid=args.soeid,
-                project=args.project
+    @staticmethod
+    def verify_token(token: str) -> TokenPayload:
+        """
+        Verify JWT token using shared secret - no database lookup required.
+        """
+        if not token:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, 
+                detail="Missing API token"
             )
-            if result:
-                time.sleep(1)
-    
-    # Get final metrics and info
-    print("\n=== Final Status ===")
-    get_metrics(args.use_token)
-    get_service_info(args.use_token)
 
-if __name__ == "__main__":
-    main()
+        try:
+            # Clean and validate token format
+            token = token.strip()
+            
+            # Handle potential encoding issues
+            if isinstance(token, bytes):
+                try:
+                    token = token.decode('utf-8')
+                except UnicodeDecodeError:
+                    raise HTTPException(
+                        status_code=HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token encoding"
+                    )
+            
+            # Ensure token contains only valid characters
+            try:
+                # JWT tokens should only contain base64url characters and dots
+                import re
+                if not re.match(r'^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
+
+    @staticmethod
+    async def verify_token_async(token: str = Security(api_key_header)) -> TokenPayload:
+        """
+        Async wrapper for token verification - for FastAPI dependency injection.
+        Fallback to default token "1" if ALLOW_DEFAULT_TOKEN is enabled.
+        """
+        from config import settings
+        
+        # Handle missing token
+        if not token:
+            if settings.ALLOW_DEFAULT_TOKEN:
+                # Use default token for development
+                return TokenPayload(
+                    token_id="default_user",
+                    project_id="default_user",  # Use soeid as project_id
+                    expires_at=None
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Missing API token"
+                )
+        
+        # Clean token input
+        token = str(token).strip()
+        
+        # Handle default token for development
+        if token == "1" and settings.ALLOW_DEFAULT_TOKEN:
+            return TokenPayload(
+                token_id="default_user",
+                project_id="default_user",  # Use soeid as project_id
+                expires_at=None
+            )
+        
+        # Handle potential URL encoding issues
+        try:
+            import urllib.parse
+            # Try to decode if it looks URL encoded
+            if '%' in token:
+                decoded_token = urllib.parse.unquote(token)
+                if decoded_token != token:
+                    token = decoded_token
+        except Exception:
+            pass  # Continue with original token if URL decoding fails
+        
+        # Verify JWT token
+        return AuthManager.verify_token(token)
+
+# Authentication dependency for FastAPI routes
+async def get_token_payload(token: str = Security(api_key_header)) -> TokenPayload:
+    """Get token payload for protected routes."""
+    return await AuthManager.verify_token_async(token)
+
+# Alternative dependency that allows anonymous access
+async def get_token_payload_optional(token: str = Security(api_key_header)) -> Optional[TokenPayload]:
+    """Get token payload for routes that allow anonymous access."""
+    try:
+        return await AuthManager.verify_token_async(token)
+    except HTTPException:
+        return None, token):
+                    raise HTTPException(
+                        status_code=HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token format"
+                    )
+            except Exception:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token format"
+                )
+
+            # Decode and verify token
+            payload = jwt.decode(token, DGEN_KEY, algorithms=["HS256"])
+            
+            # Extract claims
+            soeid = payload.get("soeid")
+            project_id = payload.get("project_id")
+            
+            if not soeid:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: missing soeid"
+                )
+
+            # If no project_id in token, use soeid as project_id for backward compatibility
+            if not project_id:
+                project_id = soeid
+
+            return TokenPayload(
+                token_id=soeid,  # Use soeid as token_id for compatibility
+                project_id=project_id,
+                expires_at=None  # No expiration
+            )
+
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail="Token expired"
+            )
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token: {str(e)}"
+            )
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"Token verification failed: {str(e)}"
+            )
+
+    @staticmethod
+    async def verify_token_async(token: str = Security(api_key_header)) -> TokenPayload:
+        """
+        Async wrapper for token verification - for FastAPI dependency injection.
+        Fallback to default token "1" if ALLOW_DEFAULT_TOKEN is enabled.
+        """
+        from config import settings
+        
+        # Handle missing token
+        if not token:
+            if settings.ALLOW_DEFAULT_TOKEN:
+                # Use default token for development
+                return TokenPayload(
+                    token_id="default_user",
+                    project_id="default",
+                    expires_at=None
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Missing API token"
+                )
+        
+        # Handle default token for development
+        if token == "1" and settings.ALLOW_DEFAULT_TOKEN:
+            return TokenPayload(
+                token_id="default_user",
+                project_id="default",
+                expires_at=None
+            )
+        
+        # Verify JWT token
+        return AuthManager.verify_token(token)
+
+# Authentication dependency for FastAPI routes
+async def get_token_payload(token: str = Security(api_key_header)) -> TokenPayload:
+    """Get token payload for protected routes."""
+    return await AuthManager.verify_token_async(token)
+
+# Alternative dependency that allows anonymous access
+async def get_token_payload_optional(token: str = Security(api_key_header)) -> Optional[TokenPayload]:
+    """Get token payload for routes that allow anonymous access."""
+    try:
+        return await AuthManager.verify_token_async(token)
+    except HTTPException:
+        return None, soeid):
+            raise HTTPException(
+                status_code=400, 
+                detail="SOEID contains invalid characters. Use only letters, numbers, dots, hyphens, and underscores."
+            )
+
+        payload = {
+            "soeid": str(soeid).strip(),
+            "project_id": str(project_id).strip(),
+            "iat": int(datetime.now(timezone.utc).timestamp()),  # Issued at as integer
+            "jti": str(uuid.uuid4())  # JWT ID for uniqueness
+        }
+
+        try:
+            # Generate token with explicit encoding
+            token = jwt.encode(payload, DGEN_KEY, algorithm="HS256")
+            
+            # Ensure token is returned as string (PyJWT 2.x compatibility)
+            if isinstance(token, bytes):
+                token = token.decode('utf-8')
+                
+            return token
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
+
+    @staticmethod
+    def verify_token(token: str) -> TokenPayload:
+        """
+        Verify JWT token using shared secret - no database lookup required.
+        """
+        if not token:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, 
+                detail="Missing API token"
+            )
+
+        try:
+            # Clean and validate token format
+            token = token.strip()
+            
+            # Handle potential encoding issues
+            if isinstance(token, bytes):
+                try:
+                    token = token.decode('utf-8')
+                except UnicodeDecodeError:
+                    raise HTTPException(
+                        status_code=HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token encoding"
+                    )
+            
+            # Ensure token contains only valid characters
+            try:
+                # JWT tokens should only contain base64url characters and dots
+                import re
+                if not re.match(r'^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
+
+    @staticmethod
+    async def verify_token_async(token: str = Security(api_key_header)) -> TokenPayload:
+        """
+        Async wrapper for token verification - for FastAPI dependency injection.
+        Fallback to default token "1" if ALLOW_DEFAULT_TOKEN is enabled.
+        """
+        from config import settings
+        
+        # Handle missing token
+        if not token:
+            if settings.ALLOW_DEFAULT_TOKEN:
+                # Use default token for development
+                return TokenPayload(
+                    token_id="default_user",
+                    project_id="default",
+                    expires_at=None
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Missing API token"
+                )
+        
+        # Handle default token for development
+        if token == "1" and settings.ALLOW_DEFAULT_TOKEN:
+            return TokenPayload(
+                token_id="default_user",
+                project_id="default",
+                expires_at=None
+            )
+        
+        # Verify JWT token
+        return AuthManager.verify_token(token)
+
+# Authentication dependency for FastAPI routes
+async def get_token_payload(token: str = Security(api_key_header)) -> TokenPayload:
+    """Get token payload for protected routes."""
+    return await AuthManager.verify_token_async(token)
+
+# Alternative dependency that allows anonymous access
+async def get_token_payload_optional(token: str = Security(api_key_header)) -> Optional[TokenPayload]:
+    """Get token payload for routes that allow anonymous access."""
+    try:
+        return await AuthManager.verify_token_async(token)
+    except HTTPException:
+        return None, token):
+                    raise HTTPException(
+                        status_code=HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token format"
+                    )
+            except Exception:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token format"
+                )
+
+            # Decode and verify token
+            payload = jwt.decode(token, DGEN_KEY, algorithms=["HS256"])
+            
+            # Extract claims
+            soeid = payload.get("soeid")
+            project_id = payload.get("project_id", "default")
+            
+            if not soeid:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: missing soeid"
+                )
+
+            return TokenPayload(
+                token_id=soeid,  # Use soeid as token_id for compatibility
+                project_id=project_id,
+                expires_at=None  # No expiration
+            )
+
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail="Token expired"
+            )
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token: {str(e)}"
+            )
+        except HTTPException:
+            # Re-raise HTTP exceptions as-is
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"Token verification failed: {str(e)}"
+            )
+
+    @staticmethod
+    async def verify_token_async(token: str = Security(api_key_header)) -> TokenPayload:
+        """
+        Async wrapper for token verification - for FastAPI dependency injection.
+        Fallback to default token "1" if ALLOW_DEFAULT_TOKEN is enabled.
+        """
+        from config import settings
+        
+        # Handle missing token
+        if not token:
+            if settings.ALLOW_DEFAULT_TOKEN:
+                # Use default token for development
+                return TokenPayload(
+                    token_id="default_user",
+                    project_id="default",
+                    expires_at=None
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Missing API token"
+                )
+        
+        # Handle default token for development
+        if token == "1" and settings.ALLOW_DEFAULT_TOKEN:
+            return TokenPayload(
+                token_id="default_user",
+                project_id="default",
+                expires_at=None
+            )
+        
+        # Verify JWT token
+        return AuthManager.verify_token(token)
+
+# Authentication dependency for FastAPI routes
+async def get_token_payload(token: str = Security(api_key_header)) -> TokenPayload:
+    """Get token payload for protected routes."""
+    return await AuthManager.verify_token_async(token)
+
+# Alternative dependency that allows anonymous access
+async def get_token_payload_optional(token: str = Security(api_key_header)) -> Optional[TokenPayload]:
+    """Get token payload for routes that allow anonymous access."""
+    try:
+        return await AuthManager.verify_token_async(token)
+    except HTTPException:
+        return None
